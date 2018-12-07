@@ -1,0 +1,15 @@
+INTELLEKT
+=========
+
+Intellekt aims to provide intellisense features for various programming languages
+
+How to install
+--------------
+
+1) you can unzip this program and place it in your`sublime text` packages directory or
+2) install from package control. Search `intellekt`
+
+Issues
+------
+
+Some snippets and completions may affect display of the intellisense. Disable them to utilise full features. You may also need to press the backspace button to help

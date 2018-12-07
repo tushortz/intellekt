@@ -1,7 +1,10 @@
-import os
-from . import helpers
+import html
 import json
+import os
 import re
+from urllib import request
+
+from . import helpers
 
 JAVASE_CONTENTS = helpers.get_content_to_json("javase.json")
 JAVAFX_CONTENTS = helpers.get_content_to_json("javafx.json")
@@ -57,3 +60,66 @@ def get_imports_from_view(view_text):
             filtered_imports.append(i)
 
     return filtered_imports
+
+
+def suggest_import(line_text):
+    imports = re.search(
+        r"import ((java|javax|javafx|com|org)\.[\w\.]+)", line_text, re.I)
+
+    if not imports:
+        return
+
+    imports = imports.group(1)
+
+    suggestion = []
+    suggestions = []
+
+    for content in JAVASE_CONTENTS + JAVAFX_CONTENTS:
+        p = content.get("p")
+        c = content.get("c")
+        import_text = "{0}.{1}".format(p, c)
+
+        if re.match(imports, import_text):
+            suggestions.append(
+                "<a href='{0}'>{1}</a>".format(get_url(import_text), import_text))
+
+    suggestions = sorted(set(suggestions))
+    suggestions = "<br>".join(suggestions)
+    return suggestions
+
+
+def get_url(text):
+    url_prefix = "https://docs.oracle.com/javase/10/docs/api/{0}.html"
+
+    if text.endswith("*") or text.endswith("."):
+        url_prefix = "https://docs.oracle.com/javase/10/docs/api/{0}/package-summary.html"
+        text = text.rsplit(".", 1)[0]
+
+    url = text.replace(".", "/")
+    url = url_prefix.format(url)
+    return url
+
+
+def get_documentation(line_text):
+    imports = re.search(
+        r"import ((java|javax|javafx|com|org)\.[\w\.]+)", line_text, re.I)
+
+    if not imports:
+        return
+
+    imports = imports.group(1)
+
+    url = get_url(imports)
+    r = request.urlopen(url).read().decode("utf-8")
+
+    data = re.search(r'<div class="block">(.*?)(?:</div|h2)>', r, re.DOTALL)
+
+    if not data:
+        return
+
+    if data:
+        data = data.group(1).strip(".")
+
+    data = data.encode('ascii', 'ignore').decode("utf-8")
+    data = "<strong>{0}</strong><br><br>{1}".format(imports, data)
+    return data

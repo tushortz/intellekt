@@ -1,0 +1,6 @@
+Whats new in 0.0.1
+------------------
+
+* added java completion features for methods and imports
+* clicking any of the text in the popup will take you to the java documentation website
+* view class/package description on click to line then hover
