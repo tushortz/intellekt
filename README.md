@@ -4,7 +4,7 @@ A sublime text plugin that attempts to provide intellisense for various language
 
 ## TODO
 
-Java
-Python
-Ruby
-QT C++
+* [] Java
+* [] Python
+* [] Ruby
+* [] QT C++
