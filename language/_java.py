@@ -2,16 +2,18 @@ import os
 from . import helpers
 import json
 import re
-CONTENTS = helpers.get_content_to_json("java.json")
+
+JAVASE_CONTENTS = helpers.get_content_to_json("javase.json")
+JAVAFX_CONTENTS = helpers.get_content_to_json("javafx.json")
 
 
-def get_methods(package_name, class_name="*"):
+def _get_methods(json_data, package_name, class_name):
     methods = []
-    for content in CONTENTS:
+    for content in json_data:
         p = content.get("p")
         c = content.get("c")
         l = content.get("l")
-        print(p)
+
         if l.isupper():
             symbol = "▢"
         elif l[0].isupper() and l[1].islower():
@@ -30,8 +32,19 @@ def get_methods(package_name, class_name="*"):
     return methods
 
 
+def get_methods(package_name, class_name="*"):
+    data = _get_methods(JAVASE_CONTENTS, package_name, class_name)
+
+    if not data:
+        data = _get_methods(JAVAFX_CONTENTS, package_name, class_name)
+
+    return data
+
+
 def get_imports_from_view(view_text):
-    imports = sorted(set(re.findall(r"import ((?:java|javax|javafx|com|org)\.[a-z0-9\_\.]+)\.([_A-Z\*][\w_\.]*);", view_text)))
+    imports = sorted(set(re.findall(
+        r"((?:java|javax|javafx|com|org)\.[a-z0-9\_\.]+)\.([_A-Z\*][\w_\.]*)", view_text)))
+
     specials = {}
 
     for i in imports:
