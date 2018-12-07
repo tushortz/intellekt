@@ -47,5 +47,5 @@ class JavaCompletion(sublime_plugin.ViewEventListener):
                 doc = _java.get_documentation(current_line)
                 self.view.show_popup(doc, 0, sublime.HIDE_ON_MOUSE_MOVE_AWAY,
                                  on_navigate=lambda x: print(x))
-            except:
-                self.view.window().status_message("Can't find doc")
+            except Exception as err:
+                self.view.window().status_message("Error: " + err)

@@ -10,6 +10,7 @@ A sublime text plugin that attempts to provide intellisense for various language
 * import autocomplete suggestions and navigation to documentation url
 * view class/package description on click to line then hover
 
+![java features](screenshots/java_features.png)
 
 ## TODO
 
