@@ -32,7 +32,7 @@ class JavaCompletion(sublime_plugin.ViewEventListener):
         scope = self.view.scope_name(0)
         current_line = self.view.substr(self.view.line(self.view.sel()[0]))
 
-        if not "source.java" in scope or current_line < 2:
+        if not "source.java" in scope or len(current_line) < 2:
             return
 
 
