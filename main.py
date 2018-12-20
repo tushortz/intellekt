@@ -44,11 +44,11 @@ class JavaCompletion(sublime_plugin.ViewEventListener):
 
     def on_hover(self, point, hover_zone):
         scope = self.view.scope_name(0)
+        current_line = self.view.substr(self.view.line(self.view.sel()[0]))
 
-        if not "source.java" in scope or len(prefix) < 2:
+        if not "source.java" in scope or len(current_line) < 2:
             return
 
-        current_line = self.view.substr(self.view.line(self.view.sel()[0]))
 
         if "import " in current_line and len(current_line) > 7:
             self.view.window().status_message("Searching for doc ...")
