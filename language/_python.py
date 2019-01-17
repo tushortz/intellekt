@@ -1,9 +1,14 @@
-import inspect
-import re
 import importlib
+import inspect
+import json
+import os
+import re
+import site
+import sys
+
 from . import helpers
 
-TEMPLATE = "{0} {1}\t{2}"
+TEMPLATE = "{0} {1}\t{2} "
 
 
 def get_module_members(module, package=''):
@@ -48,7 +53,6 @@ def get_module_members(module, package=''):
     except Exception as e:
         print(e)
 
-
     return all_members
 
 
@@ -79,3 +83,75 @@ def get_imports_from_view(view_text):
             filtered_imports.append([i[0], ""])
 
     return filtered_imports
+
+
+def load_sublime_events(sublime):
+    all_views = sublime.active_window().views()
+
+    if len(all_views) > 0:
+        intellekt_settings = all_views[0].settings().get("intellekt")
+        if intellekt_settings:
+            try:
+                if type(intellekt_settings) == dict:
+                    python_path = intellekt_settings.get("python_path")
+
+                    if not os.path.exists(python_path):
+                        sublime.status_message(
+                            "Intellekt Error: '" + python_path + "' is an invalid python path")
+
+                    if python_path:
+                        site_packages = site.getsitepackages([python_path])
+
+                        for package in site_packages:
+                            if not package in sys.path:
+                                sys.path.append(package)
+                else:
+                    sublime.status_message(
+                        "Intellekt Error: Please use a dictionary as your 'intellekt' settings value")
+            except Exception as err:
+                sublime.status_message("Intellekt Error: " + str(err))
+
+
+def get_documentation(module, package=""):
+    imported = importlib.import_module(module)
+
+    if package and package != "*":
+        try:
+            imported = getattr(imported, package)
+        except:
+            pass
+        module = module + "." + package
+
+    doc = imported.__doc__ or "no doc found!"
+
+    doc = doc.encode('ascii', 'ignore').decode("utf-8")
+    data = r"<strong>{0}</strong><br><br>{1}".format(
+        module, doc.replace("\n", "<br>"))
+    return data
+
+
+import pkgutil
+
+
+def get_modules(path=None):
+    imports = []
+
+    for importer, name, ispkg in pkgutil.walk_packages(path, onerror=lambda x: None):
+        imports.append(name)
+
+    return imports
+
+
+def suggest_import():
+    imports = ""
+    paths = []
+    for x in sys.path:
+        if x.lower().strip("\\").endswith("lib") or x.lower().strip("\\").endswith("site-packages"):
+            paths.append(x)
+
+    try:
+        suggestions = get_modules(paths[:1])
+    except:
+        suggestions = []
+
+    return suggestions

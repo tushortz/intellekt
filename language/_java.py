@@ -70,8 +70,6 @@ def suggest_import(line_text):
         return
 
     imports = imports.group(1)
-
-    suggestion = []
     suggestions = []
 
     for content in JAVASE_CONTENTS + JAVAFX_CONTENTS:

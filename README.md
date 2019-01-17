@@ -12,10 +12,30 @@ A sublime text plugin that attempts to provide intellisense for various language
 
 ![java features](screenshots/java_features.png)
 
+### Python
+
+* Method autocompletion
+
+## Recommended settings
+
+In `Preferences.sublime-settings`, add the following:
+
+```json
+"intellekt": {
+    "python_path": "C:\\Program Files (x86)\\Python37-32"
+},
+"auto_complete_triggers": [ 
+    {"selector": "source.python", "characters": "."}
+]
+```
+
+> Make sure to replace the python_path with the correct python_path
+
+
 ## TODO
 
 * [x] Java
-* [ ] Python
+* [x] Python
 * [ ] Ruby
 * [ ] QT C++
 * [ ] C/C++
