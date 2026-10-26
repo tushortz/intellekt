@@ -66,7 +66,7 @@ def _clean_javadoc(raw):
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"&[a-z]+;", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
-    return text[:500]
+    return text
 
 
 def _skip_string(src, i, quote):

@@ -23,7 +23,7 @@ MAX_RI = 30_000
 SKIP_DIRS = %w[test tests testing spec fixtures].freeze
 
 def clip(text)
-  text.to_s.gsub(/\s+/, " ").strip[0, 500]
+  text.to_s.gsub("\r\n", "\n").gsub("\r", "\n").strip
 end
 
 def snippet_label(text)
@@ -141,7 +141,7 @@ def comments_by_line(src)
       next
     else
       if pending.any?
-        attached[line] = clip(pending.join(" "))
+        attached[line] = clip(pending.join("\n"))
         pending = []
       end
     end
@@ -335,18 +335,21 @@ def build(lib)
   end
 
   libdir = RbConfig::CONFIG["rubylibdir"]
-  collect(libdir, files)
+  stdlib_files = []
+  collect(libdir, stdlib_files)
+  # Gems get their own cap. A large stdlib must not crowd out installed gems.
+  gem_files = []
   begin
     require "rubygems"
     Gem::Specification.latest_specs.each do |spec|
       spec.require_paths.each do |rel|
-        collect(File.join(spec.full_gem_path, rel), files)
+        collect(File.join(spec.full_gem_path, rel), gem_files)
       end
     end
   rescue LoadError
     nil
   end
-  files.each { |root, path| index_file(root, path, out, modules, requires) }
+  (stdlib_files + gem_files).each { |root, path| index_file(root, path, out, modules, requires) }
 
   # Ripper signatures win. RI fills an empty doc and adds C methods Ripper
   # never saw (String, Array, and the rest of the core).

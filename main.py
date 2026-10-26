@@ -1,6 +1,6 @@
-"""Offline completions for Python, Java, and Ruby.
+"""Offline completions for the languages in ``core.LANGS``.
 
-On load, Intellekt indexes the interpreters already installed on this
+On load, Intellekt indexes the toolchains already installed on this
 machine into a SQLite cache. Completions and hover text are read from that
 cache. Nothing is downloaded and no third-party Python package is imported.
 """
@@ -13,24 +13,36 @@ import sublime
 import sublime_plugin
 
 from . import core
-from .indexers import java_src
+from .indexers import (
+    cpp_src, cs_src, go_src, java_src, markup_src, matlab_src, perl_src,
+    rust_src, ts_src,
+)
 
 _LOCK = threading.Lock()
 _SETTINGS = "Intellekt.sublime-settings"
-_SCOPE = "source.python, source.java, source.ruby"
-_TRIGGERS = (
-    {"selector": "source.python", "characters": "."},
-    {"selector": "source.java", "characters": "."},
-    {"selector": "source.ruby", "characters": "."},
+_SCOPE = ", ".join(selector for selector, _lang_name in core.LANG_SELECTORS)
+_TRIGGERS = tuple(
+    {"selector": selector, "characters": core.LANG_TRIGGERS[lang]}
+    for selector, lang in core.LANG_SELECTORS
 )
+_SCRIPTS = {
+    "python": "python_index.py",
+    "ruby": "ruby_index.rb",
+    "javascript": "js_index.js",
+    "php": "php_index.php",
+}
 _MEMBER_FLAGS = sublime.INHIBIT_WORD_COMPLETIONS | sublime.DYNAMIC_COMPLETIONS
 _BARE_FLAGS = sublime.DYNAMIC_COMPLETIONS
+# One letter each. Sublime draws it small in the completion row, in the
+# theme color for that kind, instead of a color emoji.
 _KINDS = {
-    "function": sublime.KIND_FUNCTION,
-    "type": sublime.KIND_TYPE,
-    "variable": sublime.KIND_VARIABLE,
-    "namespace": sublime.KIND_NAMESPACE,
+    "function": (sublime.KIND_ID_FUNCTION, "f", "Function"),
+    "type": (sublime.KIND_ID_TYPE, "c", "Class"),
+    "variable": (sublime.KIND_ID_VARIABLE, "p", "Property"),
+    "namespace": (sublime.KIND_ID_NAMESPACE, "m", "Module"),
 }
+_KIND_CONSTANT = (sublime.KIND_ID_VARIABLE, "k", "Constant")
+_KIND_FALLBACK = (sublime.KIND_ID_AMBIGUOUS, "•", "Symbol")
 # NOTE: only the start of a very large buffer is scanned for imports and
 # assignments. Upgrade path: a background parse of the whole buffer.
 _SOURCE_CAP = 400_000
@@ -62,6 +74,15 @@ def _detected():
         ruby_executable=settings.get("ruby_executable") or "",
         java_home=settings.get("java_home") or "",
         java_sources=sources,
+        node_executable=settings.get("node_executable") or "",
+        tsc_executable=settings.get("tsc_executable") or "",
+        dotnet_root=settings.get("dotnet_root") or "",
+        go_executable=settings.get("go_executable") or "",
+        php_executable=settings.get("php_executable") or "",
+        rustc_executable=settings.get("rustc_executable") or "",
+        cxx_compiler=settings.get("cxx_compiler") or "",
+        perl_executable=settings.get("perl_executable") or "",
+        matlab_executable=settings.get("matlab_executable") or "",
     )
 
 
@@ -70,8 +91,34 @@ def _produce(lang, info):
         for path in info["sources"]:
             yield from java_src.scan_zip(path)
         return
-    script = "python_index.py" if lang == "python" else "ruby_index.rb"
-    yield from core.run_indexer(info["executable"], script)
+    if lang == "typescript":
+        yield from ts_src.scan_roots(info["roots"])
+        return
+    if lang == "csharp":
+        yield from cs_src.scan_roots(info["roots"])
+        return
+    if lang == "go":
+        yield from go_src.scan_roots(info["stdlib"], info.get("modules") or "")
+        return
+    if lang == "rust":
+        yield from rust_src.scan_roots(info["library"], info.get("cargo") or "")
+        return
+    if lang == "cpp":
+        yield from cpp_src.scan_dirs(info["cxx_dirs"], info.get("c_dirs") or [])
+        return
+    if lang == "css":
+        yield from markup_src.css_records()
+        return
+    if lang == "html":
+        yield from markup_src.html_records()
+        return
+    if lang == "perl":
+        yield from perl_src.scan_roots(info["roots"])
+        return
+    if lang == "matlab":
+        yield from matlab_src.scan_roots(info["roots"])
+        return
+    yield from core.run_indexer(info["executable"], _SCRIPTS[lang])
 
 
 def ensure_indexes(force):
@@ -81,7 +128,7 @@ def ensure_indexes(force):
     try:
         detected = _detected()
         db_path = _db_path()
-        for lang in ("python", "java", "ruby"):
+        for lang in core.LANGS:
             info = detected.get(lang)
             if not info:
                 continue
@@ -102,12 +149,9 @@ def ensure_indexes(force):
 
 
 def _lang(view, point):
-    if view.match_selector(point, "source.python"):
-        return "python"
-    if view.match_selector(point, "source.java"):
-        return "java"
-    if view.match_selector(point, "source.ruby"):
-        return "ruby"
+    for selector, lang in core.LANG_SELECTORS:
+        if view.match_selector(point, selector):
+            return lang
     return None
 
 
@@ -117,10 +161,15 @@ def _source(view):
 
 
 def _details(doc):
-    text = (doc or "").strip()
+    text = re.sub(r"\s+", " ", (doc or "")).strip()
     if not text:
         return ""
-    return _escape(text[:160])
+    return _escape(text)
+
+
+def _open_link(href):
+    if href.startswith("https://") or href.startswith("http://"):
+        sublime.run_command("open_url", {"url": href})
 
 
 def _escape(text):
@@ -129,6 +178,12 @@ def _escape(text):
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
+
+
+def _icon(kind, name=""):
+    if kind == "variable" and len(name) > 1 and name.isupper():
+        return _KIND_CONSTANT
+    return _KINDS.get(kind, _KIND_FALLBACK)
 
 
 def _annotation(signature):
@@ -145,7 +200,7 @@ def _items_from_symbols(rows):
             name,
             snippet,
             annotation=_annotation(snippet),
-            kind=_KINDS.get(kind, sublime.KIND_AMBIGUOUS),
+            kind=_icon(kind, name),
             details=_details(doc),
         ))
     return items
@@ -154,9 +209,10 @@ def _items_from_symbols(rows):
 def _member_completions(view, point, prefix, lang):
     start = point - len(prefix)
     before = view.substr(sublime.Region(max(0, start - 300), start))
-    if not before.rstrip().endswith("."):
+    left, _op = core.member_op(before)
+    if left is None:
         return None
-    receiver = core.receiver_from(before.rstrip()[:-1])
+    receiver = core.receiver_from(left)
     if not receiver:
         return None
     db_path = _db_path()
@@ -169,13 +225,53 @@ def _member_completions(view, point, prefix, lang):
     return sublime.CompletionList(_items_from_symbols(rows), _MEMBER_FLAGS)
 
 
+def _markup_completions(view, point, lang):
+    if lang not in ("css", "html"):
+        return None
+    line = view.substr(sublime.Region(view.line(point).a, point))
+    db_path = _db_path()
+    if lang == "css":
+        found = core.css_value(line)
+        if not found:
+            return None
+        prop, partial = found
+        rows = core.query_symbols(db_path, lang, prop, partial, 40)
+    else:
+        found = core.html_context(line)
+        if not found:
+            return None
+        if found[0] == "tag":
+            rows = core.query_symbols(db_path, lang, "html", found[1], 120)
+        else:
+            tag, partial = found[1], found[2]
+            rows = core.query_symbols(db_path, lang, tag, partial, 40)
+            have = {row[0] for row in rows}
+            for row in core.query_symbols(db_path, lang, "global", partial, 40):
+                if row[0] not in have:
+                    rows.append(row)
+    if not rows:
+        return None
+    return sublime.CompletionList(_items_from_symbols(rows), _MEMBER_FLAGS)
+
+
 def _import_completions(view, point, lang):
     line = view.substr(sublime.Region(view.line(point).a, point))
     typed = core.import_typed(lang, line)
-    if not typed:
+    if typed is None:
         return None
-    rows = core.module_names(_db_path(), lang)
-    segments = core.import_segments(rows, typed, core.SEP[lang])
+    sep = core.SEP[lang]
+    db_path = _db_path()
+    symbols = []
+    if lang == "python" and re.match(r"\s*from\s+\S", line) and sep in typed:
+        owner = typed[:-len(sep)] if typed.endswith(sep) else typed.rsplit(sep, 1)[0]
+        partial = "" if typed.endswith(sep) else typed.rsplit(sep, 1)[1]
+        if owner:
+            symbols = core.query_symbols(
+                db_path, lang, owner, partial, public_only=True,
+            )
+    segments = core.from_import_segments(
+        core.module_names(db_path, lang), symbols, typed, sep,
+    )
     if not segments:
         return None
     items = []
@@ -184,7 +280,7 @@ def _import_completions(view, point, lang):
             segment["trigger"],
             annotation=segment["annotation"],
             completion=segment["trigger"],
-            kind=_KINDS.get(segment["kind"], sublime.KIND_NAMESPACE),
+            kind=_icon(segment["kind"], segment["trigger"]),
             details=_details(segment["doc"]),
         ))
     return sublime.CompletionList(items, _MEMBER_FLAGS)
@@ -202,7 +298,7 @@ def _bare_completions(view, prefix, lang):
             trigger,
             annotation=annotation,
             completion=trigger,
-            kind=_KINDS.get(kind, sublime.KIND_TYPE),
+            kind=_icon(kind, trigger),
             details=_details(doc),
         ))
     return sublime.CompletionList(items, _BARE_FLAGS)
@@ -239,6 +335,9 @@ class IntellektListener(sublime_plugin.EventListener):
         lang = _lang(view, point)
         if not lang:
             return None
+        markup = _markup_completions(view, point, lang)
+        if markup:
+            return markup
         imported = _import_completions(view, point, lang)
         if imported:
             return imported
@@ -265,16 +364,15 @@ class IntellektListener(sublime_plugin.EventListener):
         title = ""
         doc = ""
         stripped = before.rstrip()
-        if stripped.endswith(".") or stripped.endswith("::"):
-            cut = 2 if stripped.endswith("::") else 1
-            receiver = core.receiver_from(stripped[:-cut])
+        left, op = core.member_op(stripped)
+        if left is not None:
+            receiver = core.receiver_from(left)
             owner = core.resolve_owner(db_path, lang, source, receiver) if receiver else None
             if owner:
-                sep = "::" if stripped.endswith("::") else "."
                 doc = core.symbol_doc(db_path, lang, owner, word) or core.module_doc(
-                    db_path, lang, owner + sep + word
+                    db_path, lang, owner + op + word
                 )
-                title = owner + sep + word
+                title = owner + op + word
         else:
             owner = core.resolve_owner(db_path, lang, source, word)
             if owner:
@@ -287,12 +385,14 @@ class IntellektListener(sublime_plugin.EventListener):
                 title = word
         if not doc:
             return
-        body = _escape(doc).replace("\n", "<br>")
         view.show_popup(
-            "<b>%s</b><br><br>%s" % (_escape(title), body),
+            '<body style="font-size: 0.85em"><b>%s</b><br><br>%s</body>'
+            % (_escape(title), core.markdown_html(doc)),
             flags=sublime.HIDE_ON_MOUSE_MOVE_AWAY,
             location=point,
             max_width=480,
+            max_height=320,
+            on_navigate=_open_link,
         )
 
 

@@ -12,3 +12,17 @@ class Box:
     def put(self, value):
         """Store it."""
         self.value = value
+
+    @property
+    def label(self):
+        """The label."""
+        return ""
+
+    @classmethod
+    def born(cls):
+        """A new box."""
+        return cls()
+
+
+_box = Box()
+put = _box.put
