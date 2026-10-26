@@ -1,15 +1,14 @@
 INTELLEKT
 =========
 
-Intellekt aims to provide intellisense features for various programming languages
+Offline completions for Python, Java, and Ruby.
 
-How to install
---------------
+Intellekt indexes the Python, Ruby, and JDK already installed on this machine.
+It does not download definitions and it does not need a settings change when
+those tools are on PATH.
 
-1) you can unzip this program and place it in your`sublime text` packages directory or
-2) install from package control. Search `intellekt`
+The first index runs in the background. The status bar shows progress.
+Command Palette:
 
-Issues
-------
-
-Some snippets and completions may affect display of the intellisense. Disable them to utilise full features. You may also need to press the backspace button to help
+* Intellekt: Index Status
+* Intellekt: Rebuild Index

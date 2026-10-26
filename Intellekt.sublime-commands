@@ -1,0 +1,10 @@
+[
+    {
+        "caption": "Intellekt: Rebuild Index",
+        "command": "intellekt_rebuild_index"
+    },
+    {
+        "caption": "Intellekt: Index Status",
+        "command": "intellekt_index_status"
+    }
+]

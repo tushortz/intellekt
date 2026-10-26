@@ -1,0 +1,10 @@
+What's new in 0.1.0
+-------------------
+
+* Completions are built from the local Python, Ruby, and JDK. The old
+  hand-maintained data files are gone.
+* Hover text is read from that index. Java descriptions no longer fetch
+  Oracle's website.
+* Dot completion follows the name before the dot, and "." opens the panel
+  without a Preferences edit.
+* Ruby is included.
