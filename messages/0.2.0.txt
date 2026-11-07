@@ -1,12 +1,61 @@
 What's new in 0.2.0
 -------------------
 
-* Uses an installed language server (pyright, gopls, clangd,
-  rust-analyzer and more) for smarter suggestions. The offline index is
-  still used when no server is installed.
-* Finds your project's Python virtual environment and suggests the
-  packages installed in it.
-* Suggestions continue after a call, for example
+LANGUAGE SERVERS
+
+Intellekt now talks to language servers itself, with no extra package
+needed. When one is installed (pyright, gopls, clangd, rust-analyzer,
+ruby-lsp, TypeScript 7, and more), it is used for smarter suggestions.
+When none is installed, or it is slow, the offline index answers as
+before.
+
+With a language server you get:
+
+* Errors and warnings underlined as you type, with counts in the status
+  bar. Unused and deprecated code gets a gray squiggle.
+* Parameter help while typing a call.
+* Auto-import: picking a name you have not imported adds the import.
+* Go to definition, type definition, declaration and implementation.
+* Find references, rename across files, call and type hierarchy.
+* Format the file or selection, optionally on save or as you type.
+* Quick fixes and organize imports, when the server has them.
+* Inlay hints: faint inline types and parameter names.
+* Code lens: Run and references links above functions.
+* Clickable #include paths, smart expand/shrink selection, folding.
+* VS Code shortcuts (F12, F2, Cmd/Ctrl+., Shift+Alt+F, and more). In a
+  file without a server, the keys keep their usual Sublime meaning.
+
+PYTHON
+
+* Finds your project's virtual environment and suggests its packages.
+* Typing a module you have not imported (pathl) suggests it (pathlib)
+  and adds the import.
+* Organize imports and formatting use ruff, isort or black when
+  installed, because pyright has neither.
+
+SUGGESTIONS
+
+* Suggestions continue after a call or literal, for example
   datetime.now(). or "text".strip().
-* Finds tools installed with Homebrew, nvm, Go and Cargo, even when
-  Sublime is opened from the Dock.
+* Simple black-and-white icons for classes, methods, functions and
+  properties.
+* Public names are listed before _private ones, and lowercase before
+  Uppercase (except Java).
+
+WORKS ON MORE MACHINES
+
+* Finds tools installed with Homebrew, nvm, Go, Cargo, gem and pip,
+  even when Sublime is opened from the Dock.
+* Fixes for Windows (no console windows flashing) and Linux (C++
+  standard library classes are indexed).
+
+SETTINGS HAVE MOVED
+
+Settings are now grouped per language. If you set any of the old flat
+keys, move them:
+
+    "python_executable": "..."   ->   "python": {"executable": "..."}
+    "lsp_servers": {"cpp": false} ->   "cpp": {"server": false}
+
+The old keys are no longer read. See Preferences > Package Settings >
+Intellekt > Settings, and the README, for every option.

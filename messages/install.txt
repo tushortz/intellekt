@@ -12,7 +12,7 @@ For smarter suggestions, install a language server for the languages you
 use, for example:
 
     Python      npm i -g pyright
-    JS / TS     npm i -g typescript typescript-language-server
+    JS / TS     npm i -g typescript
     Rust        rustup component add rust-analyzer
 
 Go (gopls) and C/C++ (clangd) are used when present. See the README for
