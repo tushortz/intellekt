@@ -1,13 +1,13 @@
 [
     { "caption": "-", "id": "intellekt" },
-    { "caption": "Find References", "command": "goto_reference" },
-    { "caption": "Go to Implementation", "command": "intellekt_goto", "args": { "kind": "implementation" } },
-    { "caption": "Go to Type Definition", "command": "intellekt_goto", "args": { "kind": "type_definition" } },
-    { "caption": "Rename Symbol…", "command": "intellekt_rename" },
-    { "caption": "Quick Fix…", "command": "intellekt_quick_fix" },
-    { "caption": "Format Document", "command": "intellekt_format" },
-    { "caption": "Organize Imports", "command": "intellekt_organize_imports" },
-    { "caption": "Go to Symbol in File…", "command": "intellekt_document_symbols" },
-    { "caption": "Call Hierarchy", "command": "intellekt_call_hierarchy" },
-    { "caption": "Type Hierarchy", "command": "intellekt_type_hierarchy" }
+    { "caption": "Find References", "command": "intellekt_menu", "args": {"command": "intellekt_references"} },
+    { "caption": "Go to Implementation", "command": "intellekt_menu", "args": {"command": "intellekt_goto", "args": {"kind": "implementation"}} },
+    { "caption": "Go to Type Definition", "command": "intellekt_menu", "args": {"command": "intellekt_goto", "args": {"kind": "type_definition"}} },
+    { "caption": "Rename Symbol…", "command": "intellekt_menu", "args": {"command": "intellekt_rename"} },
+    { "caption": "Quick Fix…", "command": "intellekt_menu", "args": {"command": "intellekt_quick_fix"} },
+    { "caption": "Format Document", "command": "intellekt_menu", "args": {"command": "intellekt_format"} },
+    { "caption": "Organize Imports", "command": "intellekt_menu", "args": {"command": "intellekt_organize_imports"} },
+    { "caption": "Go to Symbol in File…", "command": "intellekt_menu", "args": {"command": "intellekt_document_symbols"} },
+    { "caption": "Call Hierarchy", "command": "intellekt_menu", "args": {"command": "intellekt_call_hierarchy"} },
+    { "caption": "Type Hierarchy", "command": "intellekt_menu", "args": {"command": "intellekt_type_hierarchy"} }
 ]

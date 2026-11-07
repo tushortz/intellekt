@@ -1,17 +1,20 @@
 [
-    // VS Code shortcuts. In a file without a language server each key does
-    // what it normally does in Sublime. No context on purpose: Sublime only
-    // shows a shortcut in a menu when its binding has none.
-    // F12 and Shift+F12 are Sublime's own bindings; Intellekt answers them.
-    {"keys": ["f2"], "command": "intellekt_rename"},
-    {"keys": ["ctrl+."], "command": "intellekt_quick_fix"},
-    {"keys": ["shift+alt+o"], "command": "intellekt_organize_imports"},
-    {"keys": ["ctrl+shift+o"], "command": "intellekt_document_symbols"},
-    {"keys": ["ctrl+t"], "command": "intellekt_workspace_symbols"},
-    {"keys": ["shift+alt+h"], "command": "intellekt_call_hierarchy"},
-    {"keys": ["ctrl+shift+space"], "command": "intellekt_signature_help"},
-    {"keys": ["shift+alt+f"], "command": "intellekt_format"},
-    {"keys": ["ctrl+f12"], "command": "intellekt_goto", "args": {"kind": "implementation"}},
-    {"keys": ["shift+alt+right"], "command": "intellekt_expand_selection"},
-    {"keys": ["shift+alt+left"], "command": "intellekt_shrink_selection"}
+    // Intellekt adds no key bindings by default. These are VS Code-style
+    // suggestions: copy the ones you want into your own key bindings
+    // (the right-hand file when opened from Preferences > Package Settings >
+    // Intellekt > Key Bindings). In a file without a language server each
+    // key falls back to what it normally does in Sublime.
+    // F12 and Shift+F12 already use the language server: no binding needed.
+    //
+    // {"keys": ["f2"], "command": "intellekt_rename"},
+    // {"keys": ["ctrl+."], "command": "intellekt_quick_fix"},
+    // {"keys": ["shift+alt+f"], "command": "intellekt_format"},
+    // {"keys": ["shift+alt+o"], "command": "intellekt_organize_imports"},
+    // {"keys": ["ctrl+f12"], "command": "intellekt_goto", "args": {"kind": "implementation"}},
+    // {"keys": ["shift+alt+right"], "command": "intellekt_expand_selection"},
+    // {"keys": ["shift+alt+left"], "command": "intellekt_shrink_selection"},
+    // {"keys": ["ctrl+shift+o"], "command": "intellekt_document_symbols"},
+    // {"keys": ["ctrl+t"], "command": "intellekt_workspace_symbols"},
+    // {"keys": ["shift+alt+h"], "command": "intellekt_call_hierarchy"},
+    // {"keys": ["ctrl+shift+space"], "command": "intellekt_signature_help"},
 ]

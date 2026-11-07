@@ -9,6 +9,9 @@
     //   any feature switch below without its "lsp_" prefix, e.g. "inlay_hints": false
 
     "lsp_enabled": true,
+    // Show Intellekt's actions in the right-click menu (only in files with a
+    // language server).
+    "context_menu": true,
     // How long to wait for a server before showing built-in suggestions.
     "lsp_completion_timeout_ms": 1500,
 

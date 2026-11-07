@@ -1376,6 +1376,34 @@ class IntellektSignatureHelpCommand(sublime_plugin.TextCommand):
             _signature_help(self.view, force=True)
 
 
+class IntellektMenuCommand(sublime_plugin.TextCommand):
+    """Right-click menu entry for another Intellekt command. Shown only in files
+    with a language server, and only while the ``context_menu`` setting is on."""
+
+    # These act on the clicked position, so they get the mouse event.
+    _WANT_EVENT = {
+        "intellekt_goto", "intellekt_references", "intellekt_rename",
+        "intellekt_quick_fix", "intellekt_call_hierarchy", "intellekt_type_hierarchy",
+    }
+
+    def want_event(self) -> bool:
+        return True
+
+    def is_visible(self, command: str = "", args: Optional[dict[str, Any]] = None,
+                   event: Optional[dict[str, Any]] = None) -> bool:
+        return bool(_settings().get("context_menu", True)) and _has_server(self.view)
+
+    def run(self, edit: sublime.Edit, command: str = "", args: Optional[dict[str, Any]] = None,
+            event: Optional[dict[str, Any]] = None) -> None:
+        window = self.view.window()
+        if not window or not command:
+            return
+        args = dict(args or {})
+        if event and command in self._WANT_EVENT:
+            args["event"] = event
+        window.run_command(command, args)
+
+
 class IntellektApplyEditsCommand(sublime_plugin.TextCommand):
     """Apply LSP TextEdits to this view in one undo step."""
 

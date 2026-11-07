@@ -1,0 +1,6 @@
+# Not part of the installed package (Package Control builds it with git archive).
+.gitattributes export-ignore
+.gitignore export-ignore
+screenshots/ export-ignore
+tests/ export-ignore
+reference/ export-ignore

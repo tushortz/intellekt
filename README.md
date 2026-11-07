@@ -56,7 +56,7 @@ If a language server is installed, Intellekt uses it instead, because it gives s
 * C/C++: switch between source and header.
 * Off by default: dimming of C/C++ code left out by `#if`, and **experimental** semantic highlighting (server-based coloring).
 
-Shortcuts (same as VS Code):
+**Shortcuts.** Intellekt adds no key bindings by default, except that F12 and Shift+F12 use the language server. These VS Code-style shortcuts are ready to copy: open **Preferences → Package Settings → Intellekt → Key Bindings** (or **Preferences: Intellekt Key Bindings** in the Command Palette) and paste the ones you want from the left file into your own key bindings on the right.
 
 | Action | Mac | Windows | Linux |
 | --- | --- | --- | --- |
@@ -73,7 +73,7 @@ Shortcuts (same as VS Code):
 | Call hierarchy | Shift+Alt+H | Shift+Alt+H | Shift+Alt+H |
 | Parameter help | Cmd+Shift+Space | Ctrl+Shift+Space | Ctrl+Shift+Space |
 
-In a file without a language server, each key does what it normally does in Sublime. The right-click menu shows these shortcuts next to each item. Everything else is in the Command Palette under **Intellekt:**, including on/off toggles for each feature.
+With a binding added, a key in a file without a language server still does what it normally does in Sublime. Everything is also in the Command Palette under **Intellekt:**, including on/off toggles for each feature. The right-click menu shows Intellekt's actions in files with a language server; set `"context_menu": false` to hide them.
 
 Quick fixes and organize imports depend on the server. gopls, clangd and rust-analyzer have them. pyright does not. If no Python tool is found, the status bar says which one to install.
 
@@ -136,13 +136,14 @@ Open the Command Palette (`Cmd+Shift+P` on macOS, `Ctrl+Shift+P` elsewhere):
 
 ## Settings
 
-Open **Preferences → Package Settings → Intellekt → Settings**. Everything works without changes. Only set a value to override something.
+Open **Preferences → Package Settings → Intellekt → Settings** (or **Preferences: Intellekt Settings** in the Command Palette). Everything works without changes. Only set a value to override something.
 
 **Feature switches** (apply to every language)
 
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `lsp_enabled` | `true` | Use installed language servers |
+| `context_menu` | `true` | Show Intellekt's actions in the right-click menu |
 | `lsp_completion_timeout_ms` | `1500` | How long to wait for a server before showing built-in suggestions |
 | `lsp_diagnostics` | `true` | Underline errors and warnings |
 | `lsp_signature_help` | `true` | Parameter help while typing a call |
