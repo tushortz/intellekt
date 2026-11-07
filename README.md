@@ -4,10 +4,16 @@ Turn your sublime text into an intelligent autocomplete engine. It works offline
 
 ## Screenshots
 
+**Completions** with simple icons, the signature and docs
+
+![Completions with icons and signature](screenshots/python.png)
+
+**Rust:** inline types and parameter names, **▶ Run** links and the build output
+
+![Inlay hints, code lens and Run](screenshots/rust.png)
+
 | | |
 | --- | --- |
-| ![Completions with icons and signature](screenshots/python.png) | ![Inlay hints, code lens and Run](screenshots/rust.png) |
-| **Completions** with simple icons, the signature and docs | **Rust:** inline types and parameter names, **▶ Run** links and the build output |
 | ![Hover documentation](screenshots/hover.png) | ![Errors underlined](screenshots/errors.png) |
 | **Hover** for documentation | **Errors** underlined as you type, with the message on hover |
 | ![Unused import in Java](screenshots/java.png) | ![Auto-import](screenshots/auto_import.png) |
