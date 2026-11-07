@@ -1,12 +1,9 @@
-"""Scan C and C++ headers. libc++/libstdc++ macros are erased first; file-scope
-C functions are owned by ``c``; ``std::vector`` is namespace owner plus class.
-
-NOTE: a line scan, not a C++ parser. Unlisted macros, most templates, and
-headers past ``MAX_FILES`` are missed; ``ext``/``experimental`` are skipped;
-``bits/`` is scanned but not offered as an include. Upgrade path: ``clang -ast-dump``.
-
-NOTE: framework directories reported by the compiler are not walked.
-"""
+"""Scan C and C++ headers into symbol records. libc++/libstdc++ macros are
+erased first, and file-scope C functions are owned by ``c``."""
+# NOTE: a line scan, not a C++ parser. Unlisted macros, most templates, and
+# headers past ``MAX_FILES`` are missed; ``ext``/``experimental`` are skipped;
+# ``bits/`` is scanned but not offered as an include. Upgrade path: ``clang -ast-dump``.
+# NOTE: framework directories reported by the compiler are not walked.
 
 from __future__ import annotations
 

@@ -1,13 +1,10 @@
-"""Scan a Go install for exported ``func``/``type``/``const`` names; methods are
-owned by ``<import-path>.Type``.
-
-NOTE: ``cmd`` is skipped, ``//go:build`` is ignored, multi-line signatures are
-missed, and the module cache stops after ``MODULE_FILES``. Upgrade path: honor
-build tags, then index one module at a time.
-
-NOTE: a module in the project being edited is not indexed unless it is
-already in the module cache. Upgrade path: index the active view's folder.
-"""
+"""Scan a Go install for exported ``func``/``type``/``const`` names. Methods
+are owned by ``<import-path>.Type``."""
+# NOTE: ``cmd`` is skipped, ``//go:build`` is ignored, multi-line signatures are
+# missed, and the module cache stops after ``MODULE_FILES``. Upgrade path: honor
+# build tags, then index one module at a time.
+# NOTE: a module in the project being edited is not indexed unless it is
+# already in the module cache. Upgrade path: index the active view's folder.
 
 from __future__ import annotations
 

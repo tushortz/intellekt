@@ -1,12 +1,10 @@
-"""Scan Rust sources; ``core``/``alloc`` items are mirrored under ``std::``.
-
-NOTE: braces in strings confuse the scan; ``pub use`` and ``sys`` dirs are
-skipped; the cargo registry stops at the file cap. Upgrade path:
-rust-analyzer's parser, run outside Sublime.
-
-NOTE: the edited project's crate is not indexed. Upgrade path: index the
-active view's folder. Without rust-src, nothing is indexed or downloaded.
-"""
+"""Scan Rust sources into symbol records. ``core``/``alloc`` items are mirrored
+under ``std::``."""
+# NOTE: braces in strings confuse the scan; ``pub use`` and ``sys`` dirs are
+# skipped; the cargo registry stops at the file cap. Upgrade path:
+# rust-analyzer's parser, run outside Sublime.
+# NOTE: the edited project's crate is not indexed. Upgrade path: index the
+# active view's folder. Without rust-src, nothing is indexed or downloaded.
 
 from __future__ import annotations
 

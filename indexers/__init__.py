@@ -18,11 +18,9 @@ def walk_files(
     skip_dirs: Optional[set[str]] = None,
     allow_plain: bool = False,
 ) -> Iterator[str]:
-    """Yield source files under ``roots``, at most ``limit``.
-
-    NOTE: the walk stops after ``limit`` files, so a large module cache or
-    SDK is only partly indexed. Upgrade path: index one dependency at a time.
-    """
+    """Yield source files under ``roots``, at most ``limit``."""
+    # NOTE: the walk stops after ``limit`` files, so a large module cache or SDK
+    # is only partly indexed. Upgrade path: index one dependency at a time.
     skipped = SKIP_DIRS if skip_dirs is None else skip_dirs
     plain_skip = {"LICENSE", "README", "COPYING", "Makefile", "module.modulemap"}
     seen = 0
@@ -50,11 +48,10 @@ def walk_files(
 
 
 def merge_modules(records: Iterable[dict[str, Any]]) -> Iterator[dict[str, Any]]:
-    """Yield symbols as seen, then each module once (a later empty doc never wipes a real one).
-
-    NOTE: module names are held until ``records`` is exhausted. Upgrade path:
-    an insert that refuses to replace a non-empty doc.
-    """
+    """Yield symbols as seen, then each module once. A later empty doc never
+    wipes a real one."""
+    # NOTE: module names are held until ``records`` is exhausted. Upgrade path:
+    # an insert that refuses to replace a non-empty doc.
     modules = {}
     for rec in records:
         if rec.get("t") != "m":

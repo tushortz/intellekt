@@ -1,17 +1,11 @@
-"""Index a Python install (run with the user's interpreter):
-
-    python3 python_index.py --out symbols.jsonl [--lib ./some/tree]
-
-``.py`` files via ``ast`` (re-exports copied onto packages); C modules and
-site packages via ``inspect``. ``--lib`` indexes only that tree.
-
-NOTE: each site-package import is capped at ``SITE_IMPORT_SECONDS``; slow or
-failing imports are skipped. Upgrade path: import only packages the edited
-file names.
-
-NOTE: the walk stops after ``MAX_FILES`` per tree and skips test dirs.
-Upgrade path: index one distribution at a time.
-"""
+"""Index a Python install: ``python3 python_index.py --out symbols.jsonl [--lib
+./tree]``. Runs under the user's interpreter, reading ``.py`` files via
+``ast`` and C/site modules via ``inspect``."""
+# NOTE: each site-package import is capped at ``SITE_IMPORT_SECONDS``; slow or
+# failing imports are skipped. Upgrade path: import only packages the edited
+# file names.
+# NOTE: the walk stops after ``MAX_FILES`` per tree and skips test dirs.
+# Upgrade path: index one distribution at a time.
 
 from __future__ import annotations
 
@@ -325,12 +319,10 @@ def _alias_signature(alias: str, source: dict[str, Any]) -> str:
 
 
 def _bind_aliases(module: str, tree: ast.Module, out: list[dict[str, Any]]) -> None:
-    """Copy ``name = obj.method`` onto the module (e.g. ``random.randint``).
-
-    NOTE: the first same-named function in the file supplies the signature, so
-    a binding to a different callable is not told apart. Upgrade path: follow
-    the assignment with a type checker.
-    """
+    """Copy ``name = obj.method`` onto the module (e.g. ``random.randint``)."""
+    # NOTE: the first same-named function in the file supplies the signature, so a
+    # binding to a different callable is not told apart. Upgrade path: follow the
+    # assignment with a type checker.
     defined = {
         rec["name"] for rec in out
         if rec.get("t") == "s" and rec.get("owner") == module
@@ -394,11 +386,9 @@ def link_submodules(out: list[dict[str, Any]]) -> None:
 
 
 def apply_reexports(out: list[dict[str, Any]], exports: dict[str, dict[str, Any]]) -> None:
-    """Copy imported names onto the package that re-exports them.
-
-    NOTE: four passes; deeper re-export chains are dropped. Upgrade path: keep
-    passing until stable.
-    """
+    """Copy imported names onto the package that re-exports them."""
+    # NOTE: four passes; deeper re-export chains are dropped. Upgrade path: keep
+    # passing until stable.
     by_owner = {}
     defined = set()
     modules = set()

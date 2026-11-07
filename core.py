@@ -1,12 +1,8 @@
-"""Runtime detection, the SQLite symbol cache, and completion lookup.
-
-The cache lives outside the package: one file for most languages, one per
-Python interpreter. It is filled from ``indexers/`` JSONL or in-process scanners.
-
-NOTE: Python names are resolved from the buffer's ``ast`` (an unparseable line
-becomes ``pass``), using annotations and indexed return types. Other languages
-stay textual. No type checker here; ``lsp.py`` uses a language server if installed.
-"""
+"""Runtime detection, the SQLite symbol cache, and completion lookup. The cache
+lives outside the package, filled from ``indexers/`` output."""
+# NOTE: Python names are resolved from the buffer's ``ast`` (an unparseable line
+# becomes ``pass``), using annotations and indexed return types; other languages
+# stay textual. There is no type checker here: ``lsp.py`` uses a language server.
 
 from __future__ import annotations
 
@@ -1065,11 +1061,9 @@ def _relax_syntax(source: str) -> str:
 
 
 def _parse_python(source: str) -> Optional[ast.Module]:
-    """Parse ``source``, replacing a few unparseable lines with ``pass``.
-
-    NOTE: at most six broken lines are repaired. Upgrade path: parse only the
-    statements above the caret.
-    """
+    """Parse ``source``, replacing a few unparseable lines with ``pass``."""
+    # NOTE: at most six broken lines are repaired. Upgrade path: parse only the
+    # statements above the caret.
     try:
         return ast.parse(source)
     except (SyntaxError, ValueError):
@@ -1614,11 +1608,9 @@ def cs_uses(source: str) -> list[str]:
 
 
 def cs_assigns(source: str) -> tuple[dict[str, str], set[str]]:
-    """Map a local to its type name.
-
-    NOTE: a nested generic (``Dictionary<string, List<int>>``) is not read.
-    Upgrade path: a bracket matcher.
-    """
+    """Map a local to its type name."""
+    # NOTE: a nested generic (``Dictionary<string, List<int>>``) is not read.
+    # Upgrade path: a bracket matcher.
     assigned = {}
     calls = set()
     for match in re.finditer(
@@ -1665,11 +1657,9 @@ def _resolve_csharp(db_path: Optional[str], source: str, expr: str) -> Optional[
 
 
 def go_bindings(source: str) -> dict[str, str]:
-    """Map the local name to the import path.
-
-    NOTE: a dot-import (``import . "fmt"``) is not expanded. Upgrade path:
-    treat that package's exported names as bare names.
-    """
+    """Map the local name to the import path."""
+    # NOTE: a dot-import (``import . "fmt"``) is not expanded. Upgrade path: treat
+    # that package's exported names as bare names.
     bound = {}
 
     def take(alias: Optional[str], path: str) -> None:
@@ -1776,11 +1766,9 @@ def rust_assigns(source: str) -> tuple[dict[str, str], set[str]]:
 
 
 def cpp_assigns(source: str) -> dict[str, str]:
-    """Map a local to a ``std::`` type or a capitalized type.
-
-    NOTE: nested templates (``map<int, vector<int>>``) are not read.
-    Upgrade path: a bracket matcher.
-    """
+    """Map a local to a ``std::`` type or a capitalized type."""
+    # NOTE: nested templates (``map<int, vector<int>>``) are not read.
+    # Upgrade path: a bracket matcher.
     assigned = {}
     pattern = re.compile(
         r"(?:^|[\s;{(])([A-Za-z_][\w:]*)(?:\s*<[^>;\n]*>)?\s*[*&]*\s+"
@@ -2099,12 +2087,12 @@ def _venv_python(prefix: Optional[str]) -> str:
 
 
 def find_venv(file_path: Optional[str], folders: Iterable[str] = ()) -> str:
-    """Interpreter of the venv owning ``file_path`` (walking up to the project
-    folder), then ``$VIRTUAL_ENV``/``$CONDA_PREFIX``; else "".
-
-    NOTE: Poetry and Pipenv environments outside the project are not found.
-    Upgrade path: ask ``poetry env info -p``. Until then, set ``"python": {"executable": ...}``.
-    """
+    """Interpreter of the venv that owns ``file_path``, else
+    ``$VIRTUAL_ENV``/``$CONDA_PREFIX``, else "". The walk up stops at the
+    project folder."""
+    # NOTE: Poetry and Pipenv environments outside the project are not found.
+    # Upgrade path: ask ``poetry env info -p``. Until then, set
+    # ``"python": {"executable": ...}``.
     roots = [os.path.abspath(folder) for folder in folders or ()]
     if file_path:
         current = os.path.dirname(os.path.abspath(file_path))

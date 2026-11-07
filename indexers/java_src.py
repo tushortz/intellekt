@@ -1,13 +1,10 @@
-"""Scan JDK ``src.zip`` for public types, methods, and fields.
-
-NOTE: a line scan, not a Java parser: misses unusual formatting, most
-annotations, generated sources; anonymous-class methods go to the enclosing
-type; interface constants without ``public`` are skipped. Upgrade path:
-``javap`` over the JDK's ``jmods``.
-
-NOTE: each zip stops after ``MAX_FILES`` units and test dirs are skipped (a
-normal JDK is under the cap). Upgrade path: raise ``MAX_FILES``.
-"""
+"""Scan JDK ``src.zip`` for public types, methods, and fields."""
+# NOTE: a line scan, not a Java parser: misses unusual formatting, most
+# annotations, generated sources; anonymous-class methods go to the enclosing
+# type; interface constants without ``public`` are skipped. Upgrade path:
+# ``javap`` over the JDK's ``jmods``.
+# NOTE: each zip stops after ``MAX_FILES`` units and test dirs are skipped (a
+# normal JDK is under the cap). Upgrade path: raise ``MAX_FILES``.
 
 from __future__ import annotations
 

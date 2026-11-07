@@ -1,8 +1,6 @@
-"""Completions, hover, and language-server features for ``core.LANGS``.
-
-A server from ``lsp.SERVERS`` is used when installed; otherwise (or when slow or
-empty) a local SQLite index answers. Python gets one index per interpreter/venv.
-"""
+"""Completions, hover, and language-server features for ``core.LANGS``. An
+installed server answers first, else a local SQLite index (one per Python
+interpreter)."""
 
 from __future__ import annotations
 
@@ -1811,12 +1809,10 @@ def _decorate(view: sublime.View, tries: int = 0) -> None:
 
 
 def _inlay_hints(client: lsp.Client, view: sublime.View, lang: str, uri: str) -> None:
-    """Faint inline type and parameter names (clangd, rust-analyzer).
-
-    NOTE: the whole file is requested, not just the visible part. Ceiling:
-    very large files cost more per edit. Upgrade path: request the visible
-    region and refresh on scroll.
-    """
+    """Faint inline type and parameter names (clangd, rust-analyzer)."""
+    # NOTE: the whole file is requested, not just the visible part. Ceiling: very
+    # large files cost more per edit. Upgrade path: request the visible region
+    # and refresh on scroll.
     phantoms = _phantom_set(view, "inlay")
     if not (_feature(lang, "inlay_hints") and client.supports("inlayHintProvider")):
         phantoms.update([])

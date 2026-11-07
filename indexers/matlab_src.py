@@ -1,8 +1,7 @@
-"""Scan GNU Octave/MATLAB ``.m`` files: a script's first function, or a classdef and its methods.
-
-NOTE: local functions after a classdef are recorded as methods. Nested
-``end`` is not matched. Upgrade path: a block matcher.
-"""
+"""Scan GNU Octave/MATLAB ``.m`` files: a script's first function, or a
+classdef and its methods."""
+# NOTE: local functions after a classdef are recorded as methods, and nested
+# ``end`` is not matched. Upgrade path: a block matcher.
 
 from __future__ import annotations
 

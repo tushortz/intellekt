@@ -1,13 +1,9 @@
-"""A small stdlib-only Language Server Protocol client (no ``sublime`` import).
-
-One process per (window, root, command); documents sync lazily with full text.
-
-NOTE: full-text sync resends the whole buffer when it changed since the last
-request. Ceiling: multi-megabyte files cost one copy per request. Upgrade
-path: incremental sync from ``on_text_changed``.
-NOTE: ``completionItem/resolve`` is not sent, so servers that only attach
-docs on resolve show none in the panel. Hover still shows them.
-"""
+"""A small stdlib-only Language Server Protocol client, with no ``sublime``
+import. One process serves each (window, root, command), and documents sync
+lazily with full text."""
+# NOTE: full-text sync resends the whole buffer when it changed since the last
+# request. Ceiling: multi-megabyte files cost one copy per request. Upgrade
+# path: incremental sync from ``on_text_changed``.
 
 from __future__ import annotations
 
@@ -236,11 +232,10 @@ def completion_items(result: Any, by_case: bool = True) -> tuple[list[dict[str, 
 
 
 def completion_row(item: dict[str, Any]) -> tuple[Any, ...]:
-    """``(trigger, annotation, text, is_snippet, kind, doc, extra_edits, start)``.
-
-    ``extra_edits``: e.g. an auto-import. ``start``: ``(line, utf16_char)`` where the
-    edit begins, or None (may precede the word: rust-analyzer ``visa.ref`` -> ``&visa``).
-    """
+    """``(trigger, annotation, text, is_snippet, kind, doc, extra_edits,
+    start)`` for one item. ``start`` is where the server's edit begins,
+    which can precede the typed word (rust-analyzer ``visa.ref`` ->
+    ``&visa``)."""
     label = (item.get("label") or "").strip()
     edit = item.get("textEdit") or {}
     details = item.get("labelDetails") or {}
@@ -460,10 +455,9 @@ def case_first(lang: str) -> bool:
 
 
 def diagnostic_rows(diagnostics: Optional[list[dict[str, Any]]]) -> list[tuple[Any, ...]]:
-    """``(start, end, severity, message, raw)`` per diagnostic; positions ``(line, utf16_char)``.
-
-    Severity 1 error .. 4 hint. ``raw`` is sent back with quick-fix requests.
-    """
+    """``(start, end, severity, message, raw)`` per diagnostic, with ``(line,
+    utf16_char)`` positions. Severity runs 1 (error) to 4 (hint), and
+    ``raw`` goes back with quick-fix requests."""
     rows = []
     for diag in diagnostics or ():
         rng = diag.get("range") or {}

@@ -1,8 +1,6 @@
-"""Scan installed Perl modules for ``package`` and ``sub`` lines (POD skipped).
-
-NOTE: this is a line scan. A sub built by a string eval is missed.
-Upgrade path: ``PPI``.
-"""
+"""Scan installed Perl modules for ``package`` and ``sub`` lines, skipping POD."""
+# NOTE: this is a line scan, so a sub built by a string eval is missed.
+# Upgrade path: ``PPI``.
 
 from __future__ import annotations
 

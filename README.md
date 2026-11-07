@@ -1,6 +1,6 @@
 # Intellekt
 
-Autocomplete and hover docs for Sublime Text. It works offline for Python, Java, JavaScript, TypeScript, Go, Rust, C/C++, C#, PHP, Ruby, Perl, MATLAB, CSS and HTML.
+Turn your sublime text into an intelligent autocomplete engine. It works offline for Python, Java, JavaScript, TypeScript, Go, Rust, C/C++, C#, PHP, Ruby, Perl, MATLAB, CSS and HTML.
 
 ## Screenshots
 
@@ -23,18 +23,15 @@ If a language server is installed, Intellekt uses it instead, because it gives s
 
 ## Features
 
-**Works out of the box (no setup)**
+**Works out of the box**
 
-* Autocomplete for the standard library and installed packages of 14 languages, built from what is on your computer. Works offline.
-* Suggestions follow chains and literals: `datetime.now().date().`, `Path("x").parent.`, `"text".strip().`
+* Autocomplete for the standard library and installed packages of 14 languages.
 * Hover over a name to read its documentation.
-* Completes import paths (`import os.pa…`, `from json import …`).
 * Python: typing part of a module you have not imported (`pathl`) suggests it (`pathlib`). Picking it adds `import pathlib` below your other imports.
 * Finds your project's Python virtual environment and suggests its packages.
 * Finds tools installed with Homebrew, nvm, Go, Cargo and similar, even when Sublime is opened from the Dock.
-* Simple black-and-white icons for classes, methods, functions, properties and more. Public names are listed before `_private` ones, and lowercase before Uppercase.
 
-**With a language server installed (optional)**
+**With a language server installed (Recommended)**
 
 * Smarter suggestions that understand your own code, plus docs in the suggestion list.
 * Auto-import: picking a name you have not imported adds the import.
@@ -51,7 +48,7 @@ If a language server is installed, Intellekt uses it instead, because it gives s
 * Fold the server's code blocks, imports or comments.
 * Go to a symbol in the file or project. See who calls a function (call hierarchy) and a type's parents and children (type hierarchy).
 * C/C++: switch between source and header.
-* Off by default: dimming of C/C++ code left out by `#if`, and **experimental** semantic highlighting (server-based coloring). Sublime's highlight API fills a token's background rather than recoloring its text, so semantic highlighting currently draws colored blocks over code. Leave it off unless you are experimenting.
+* Off by default: dimming of C/C++ code left out by `#if`, and **experimental** semantic highlighting (server-based coloring).
 
 Shortcuts (same as VS Code):
 
@@ -74,9 +71,9 @@ In a file without a language server, each key does what it normally does in Subl
 
 Quick fixes and organize imports depend on the server. gopls, clangd and rust-analyzer have them. pyright does not. If no Python tool is found, the status bar says which one to install.
 
-## Language servers (optional)
+## Language servers (Recommended)
 
-Install a server only for the languages you use. After installing one, run **Intellekt: Restart Language Servers**. Intellekt finds it on its own.
+Install a server only for the languages you use. After installing one, run **Intellekt: Restart Language Servers** or restart sublime text.
 
 **Same command on Mac, Windows and Linux**
 
@@ -157,16 +154,16 @@ Open **Preferences → Package Settings → Intellekt → Settings**. Everything
 
 Each language has its own block: `python`, `java`, `ruby`, `javascript`, `typescript`, `csharp`, `go`, `php`, `rust`, `cpp`, `css`, `html`, `perl`, `matlab`. A block can hold:
 
-| Key | What it sets |
-| --- | --- |
-| `executable` | The program to use: Python, Ruby, Node.js (`javascript`), `tsc` (`typescript`), Go, PHP, `rustc`, Perl, MATLAB/Octave. For Python it overrides virtual environment detection |
-| `java_home`, `sources` | Java: JDK folder, and extra source zips to index |
-| `dotnet_root` | C#: .NET folder |
-| `compiler` | C/C++: `clang++` or `g++` |
-| `server` | `null` to auto-detect, a command such as `["pylsp"]`, or `false` to turn the server off |
-| `settings` | Settings sent to the language server |
-| `initialization_options` | Options sent when the server starts |
-| any feature switch | The switch without `lsp_`, for this language only, e.g. `"inlay_hints": false` |
+| Key                      | What it sets                                                                                                                                                                 |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `executable`             | The program to use: Python, Ruby, Node.js (`javascript`), `tsc` (`typescript`), Go, PHP, `rustc`, Perl, MATLAB/Octave. For Python it overrides virtual environment detection |
+| `java_home`, `sources`   | Java: JDK folder, and extra source zips to index                                                                                                                             |
+| `dotnet_root`            | C#: .NET folder                                                                                                                                                              |
+| `compiler`               | C/C++: `clang++`or`g++`                                                                                                                                                      |
+| `server`                 | `null` to auto-detect, a command such as `["pylsp"]`, or `false` to turn the server off                                                                                      |
+| `settings`               | Settings sent to the language server                                                                                                                                         |
+| `initialization_options` | Options sent when the server starts                                                                                                                                          |
+| any feature switch       | The switch without `lsp_`, for this language only, e.g. `"inlay_hints": false`                                                                                               |
 
 Example:
 

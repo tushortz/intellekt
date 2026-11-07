@@ -1,12 +1,9 @@
-"""Scan .NET XML documentation files (``T:``/``M:``/``P:``/``F:`` member ids).
-
-NOTE: the NuGet cache stops after ``MAX_FILES`` XML files and project ``bin``
-folders are not read. Upgrade path: the targeting pack's ref assemblies via
-System.Reflection.Metadata.
-
-NOTE: ``System`` is treated as in scope by the resolver, which is wrong for
-projects that disable implicit usings.
-"""
+"""Scan .NET XML documentation files (``T:``/``M:``/``P:``/``F:`` member ids)."""
+# NOTE: the NuGet cache stops after ``MAX_FILES`` XML files and project ``bin``
+# folders are not read. Upgrade path: the targeting pack's ref assemblies via
+# System.Reflection.Metadata.
+# NOTE: ``System`` is treated as in scope by the resolver, which is wrong for
+# projects that disable implicit usings.
 
 from __future__ import annotations
 

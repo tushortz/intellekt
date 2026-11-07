@@ -1,11 +1,9 @@
-"""Scan TypeScript ``.d.ts`` files; globals are owned by ``global`` (the cache rejects "").
-
-NOTE: a brace scan, not a TS parser: cross-file overloads, mapped types and
-most generics are missed. Upgrade path: the TypeScript binder, outside Sublime.
-
-NOTE: only the ``typescript`` package and global npm root are read, not a
-project's ``node_modules``. Upgrade path: index the active view's folder.
-"""
+"""Scan TypeScript ``.d.ts`` files into symbol records. Globals are owned by
+``global``, because the cache rejects an empty owner."""
+# NOTE: a brace scan, not a TS parser: cross-file overloads, mapped types and
+# most generics are missed. Upgrade path: the TypeScript binder, outside Sublime.
+# NOTE: only the ``typescript`` package and global npm root are read, not a
+# project's ``node_modules``. Upgrade path: index the active view's folder.
 
 from __future__ import annotations
 
