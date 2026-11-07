@@ -47,10 +47,10 @@ LANGUAGE_IDS = {
 
 # LSP CompletionItemKind number -> Intellekt kind name.
 _KINDS = {
-    2: "function", 3: "function", 4: "function",
-    5: "variable", 6: "variable", 10: "variable", 12: "variable", 20: "variable",
-    23: "variable", 21: "constant",
-    7: "type", 8: "type", 13: "type", 22: "type", 25: "type",
+    2: "method", 3: "function", 4: "method",
+    5: "field", 10: "property", 23: "property",
+    6: "local", 12: "constant", 20: "constant", 21: "constant",
+    7: "type", 22: "type", 25: "type", 8: "interface", 13: "enum",
     9: "namespace", 17: "namespace", 19: "namespace",
     14: "keyword", 15: "snippet",
 }
@@ -174,6 +174,10 @@ def completion_rows(result):
     else:
         items, incomplete = result or [], False
     rows = []
+    items = sorted(items, key=lambda item: (
+        underscore_rank((item.get("filterText") or item.get("label") or "").strip()),
+        item.get("sortText") or item.get("label") or "",
+    ))
     for item in items:
         label = (item.get("label") or "").strip()
         if not label:
@@ -189,6 +193,39 @@ def completion_rows(result):
             _markup(item.get("documentation")),
         ))
     return rows, incomplete
+
+
+def underscore_rank(name):
+    """0 for public names, 1 for ``_private``, 2 for ``__dunder__``."""
+    return 2 if name.startswith("__") else 1 if name.startswith("_") else 0
+
+
+def diagnostic_rows(diagnostics):
+    """``(start, end, severity, message)`` per diagnostic. Positions are
+    ``(line, utf16_char)``. Severity is 1 error, 2 warning, 3 info, 4 hint."""
+    rows = []
+    for diag in diagnostics or ():
+        rng = diag.get("range") or {}
+        start, end = rng.get("start") or {}, rng.get("end") or {}
+        source = diag.get("source") or ""
+        message = (diag.get("message") or "").strip()
+        rows.append((
+            (start.get("line", 0), start.get("character", 0)),
+            (end.get("line", 0), end.get("character", 0)),
+            diag.get("severity") or 1,
+            "%s (%s)" % (message, source) if source else message,
+        ))
+    return rows
+
+
+def utf16_col(text, units):
+    """Code-point index of ``units`` UTF-16 code units into ``text``."""
+    count = 0
+    for index, char in enumerate(text):
+        if count >= units:
+            return index
+        count += 2 if ord(char) > 0xFFFF else 1
+    return len(text)
 
 
 def utf16_len(text):
@@ -207,6 +244,8 @@ class Client:
         self.capabilities = {}
         self.dead = False
         self.docs = {}
+        # Called as on_diagnostics(uri, diagnostics) from the reader thread.
+        self.on_diagnostics = None
         self._ready = False
         self._queue = []
         self._pending = {}
@@ -214,15 +253,15 @@ class Client:
         self._lock = threading.Lock()
         self._write_lock = threading.Lock()
         self._proc = None
+        self._stopping = False
+        self.stderr_tail = b""
 
     def start(self):
         flags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
         try:
-            # NOTE: stderr is discarded. A server that dies at start shows up
-            # as "not running" in Index Status, not with its error text.
             self._proc = subprocess.Popen(
                 self.cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL, cwd=self.root, env=self.env,
+                stderr=subprocess.PIPE, cwd=self.root, env=self.env,
                 creationflags=flags,
             )
         except OSError as err:
@@ -230,6 +269,8 @@ class Client:
             self.dead = True
             return
         threading.Thread(target=self._read, daemon=True).start()
+        self._stderr_thread = threading.Thread(target=self._read_stderr, daemon=True)
+        self._stderr_thread.start()
         root_uri = file_uri(self.root)
         self._write(self._make_request("initialize", {
             "processId": os.getpid(),
@@ -250,14 +291,18 @@ class Client:
                         "contextSupport": True,
                     },
                     "hover": {"contentFormat": ["markdown", "plaintext"]},
+                    "publishDiagnostics": {"relatedInformation": False},
                 },
             },
         }, self._on_initialized))
 
     def _on_initialized(self, result, error):
         if error or not isinstance(result, dict):
-            print("Intellekt: %s failed to initialize: %s" % (self.cmd[0], error))
-            self.stop()
+            # When the process is gone, _die already said why, or we stopped
+            # it ourselves (plugin reload, restart, window closed).
+            if not self.dead:
+                print("Intellekt: %s failed to initialize: %s" % (self.cmd[0], error))
+                self.stop()
             return
         self.capabilities = result.get("capabilities") or {}
         self._write({"jsonrpc": "2.0", "method": "initialized", "params": {}})
@@ -344,9 +389,16 @@ class Client:
         if uri in self.docs:
             self.notify("textDocument/didSave", {"textDocument": {"uri": uri}})
 
+    def _read_stderr(self):
+        # Drained so a chatty server never blocks on a full pipe. The tail is
+        # printed if the server dies on its own.
+        for line in iter(self._proc.stderr.readline, b""):
+            self.stderr_tail = (self.stderr_tail + line)[-2000:]
+
     def stop(self):
         if self.dead:
             return
+        self._stopping = True
         proc = self._proc
 
         def kill():
@@ -367,6 +419,14 @@ class Client:
                 return
             self.dead = True
             pending, self._pending = self._pending, {}
+        if not self._stopping:
+            if self._proc:
+                self._stderr_thread.join(1)
+            code = self._proc.poll() if self._proc else None
+            print("Intellekt: %s exited (code %s, root %s)\n%s" % (
+                self.cmd[0], code, self.root,
+                self.stderr_tail.decode("utf-8", "replace").strip(),
+            ))
         for callback in pending.values():
             self._call(callback, None, {"message": "server exited"})
 
@@ -420,6 +480,9 @@ class Client:
                 "jsonrpc": "2.0", "id": message["id"],
                 "result": self._answer(method, message.get("params") or {}),
             })
+        elif method == "textDocument/publishDiagnostics" and self.on_diagnostics:
+            params = message.get("params") or {}
+            self._call(self.on_diagnostics, params.get("uri"), params.get("diagnostics") or [])
 
     def _answer(self, method, params):
         """Replies to requests the server sends us."""

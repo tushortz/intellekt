@@ -740,7 +740,7 @@ def check_php_indexer():
 def check_markdown():
     plain = core.markdown_html("Say **hello** to `name` and `x` and *world*.")
     check("<b>hello</b>" in plain and ">name</code>" in plain and ">x</code>" in plain, plain)
-    check("var(--orangish)" in plain and "<i>world</i>" in plain, plain)
+    check("var(--foreground) a(0.08)" in plain and "<i>world</i>" in plain, plain)
     check(">x</code>" in core.markdown_html("use ``x``"), "double backticks")
     check("<i>" not in core.markdown_html("use some_var_name and *args"), "names stay literal")
     linked = core.markdown_html("See [docs](https://example.com/a).")
@@ -750,6 +750,11 @@ def check_markdown():
     rendered = core.markdown_html(stored)
     check("<b>Title</b>" in rendered and "<li>" in rendered and ">item</code>" in rendered, rendered)
     check("<pre" in rendered and "x &lt; 1" in rendered, rendered)
+    pyright = core.markdown_html(
+        "```python\ndef f(a)\n```\n---\nDo it.\n\nArgs:  \n&nbsp;&nbsp;a: the\\_value \\*x\\*"
+    )
+    check("&nbsp;" not in pyright and "border-top" in pyright and "<i>" not in pyright, pyright)
+    check("Args:<br>" in pyright and "the_value *x*" in pyright, pyright)
 
 
 def check_markup_perl_matlab():
@@ -846,12 +851,20 @@ def check_lsp_parsing():
         {"label": "size", "kind": 5, "documentation": {"kind": "markdown", "value": "n"}},
     ]})
     check(incomplete, "isIncomplete")
-    check(rows[0] == ("push_back(int x)", "void", "push_back(${1:int x})", True, "function", ""),
+    check(rows[0] == ("push_back(int x)", "void", "push_back(${1:int x})", True, "method", ""),
           "snippet row %s" % (rows[0],))
     check(rows[1][2] == "size" and rows[1][5] == "n", "plain row %s" % (rows[1],))
     check(lsp.hover_text({"contents": {"language": "go", "value": "func F()"}})
           == "```go\nfunc F()\n```", "marked string hover")
     check(lsp.utf16_len("a\U0001F600") == 3, "utf-16 length")
+    check(lsp.utf16_col("a\U0001F600b", 3) == 2, "utf-16 column")
+    rows = lsp.diagnostic_rows([{"range": {"start": {"line": 1, "character": 2},
+                                           "end": {"line": 1, "character": 5}},
+                                 "severity": 2, "message": "unused", "source": "x"}])
+    check(rows == [((1, 2), (1, 5), 2, "unused (x)")], "diagnostic row %s" % rows)
+    ordered, _ = lsp.completion_rows([{"label": n} for n in ("__init__", "_x", "b", "a")])
+    check([row[0] for row in ordered] == ["a", "b", "_x", "__init__"],
+          "underscores last: %s" % [row[0] for row in ordered])
 
 
 def _lsp_complete(lang, root, path, text, want):
@@ -887,12 +900,46 @@ def _lsp_complete(lang, root, path, text, want):
         client.stop()
 
 
+def _lsp_diagnostics(directory):
+    """The Python server reports a type error through on_diagnostics."""
+    cmd = lsp.find_command("python", path=lsp.search_path())
+    if not cmd:
+        print("skip: no python server")
+        return
+    path = os.path.join(directory, "bad.py")
+    text = "x: int = 'text'\n"
+    with open(path, "w") as handle:
+        handle.write(text)
+    done = __import__("threading").Event()
+    got = []
+
+    def received(uri, diagnostics):
+        if uri == lsp.file_uri(path) and diagnostics:
+            got.extend(lsp.diagnostic_rows(diagnostics))
+            done.set()
+
+    client = lsp.Client(cmd, directory)
+    client.on_diagnostics = received
+    client.start()
+    try:
+        client.sync(path, "python", text, 1)
+        check(done.wait(60), "%s sent no diagnostics" % cmd[0])
+        check(got[0][2] == 1 and got[0][0][0] == 0, "type error on line 1: %s" % got)
+    finally:
+        client.stop()
+
+
 def check_lsp_servers():
     directory = os.path.realpath(tempfile.mkdtemp(prefix="intellekt-lsp-"))
     try:
+        _lsp_diagnostics(directory)
         _lsp_complete(
             "cpp", directory, os.path.join(directory, "main.cpp"),
             "#include <vector>\nint main() {\n  std::vector<int> v;\n  v.", "push_back",
+        )
+        _lsp_complete(
+            "python", directory, os.path.join(directory, "main.py"),
+            "import os\nos.", "path",
         )
         with open(os.path.join(directory, "go.mod"), "w") as handle:
             handle.write("module demo\n\ngo 1.21\n")

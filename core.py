@@ -183,9 +183,10 @@ def clip_doc(text):
 # CommonMark library, if one is ever vendored.
 _FENCE_RE = re.compile(r"```[^\n`]*\n(.*?)```", re.S)
 _CODE_RE = re.compile(r"``([^`\n]+)``|`([^`\n]+)`")
+# Code keeps the theme's text color on a faint tint of it, so it stays
+# readable in every color scheme.
 _CODE_STYLE = (
-    "color: var(--orangish); "
-    "background-color: color(var(--orangish) blend(var(--background) 86%)); "
+    "background-color: color(var(--foreground) a(0.08)); "
     "padding: 0 0.25em; border-radius: 2px;"
 )
 _LINK_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
@@ -215,21 +216,36 @@ def _code_html(text, block=False):
     body = html.escape(text, quote=False)
     if block:
         return (
-            '<pre style="background-color: color(var(--foreground) blend(var(--background) 88%%)); '
-            'padding: 0.35em 0.5em; margin: 0.15em 0;">'
-            '<code style="color: var(--orangish);">%s</code></pre>' % body
+            '<pre style="background-color: color(var(--foreground) a(0.08)); '
+            'padding: 0.35em 0.5em; margin: 0.15em 0;"><code>%s</code></pre>' % body
         )
     return '<code style="%s">%s</code>' % (_CODE_STYLE, body)
+
+
+# Markdown backslash escapes, such as pyright's "the\_value" or "\*args".
+_ESCAPED_RE = re.compile(r"\\([\\`*_{}\[\]()#+\-.!|~<>])")
+_RULE_RE = re.compile(r"\s*([-*_])(\s*\1){2,}\s*$")
+# minihtml has no <hr>, but supports border-top on a div.
+_RULE_HTML = '<div style="border-top: 1px solid color(var(--foreground) a(0.2));"></div>'
+
+
+def _md_text(raw):
+    """Escape one run of plain text. ``&nbsp;`` and other entities are decoded
+    first so they are not shown literally. An escaped character is parked in
+    the private-use range while bold and italic are applied, then restored."""
+    text = _ESCAPED_RE.sub(lambda m: chr(0xE000 + ord(m.group(1))), html.unescape(raw))
+    text = _md_format(html.escape(text, quote=True))
+    return re.sub("[\ue000-\ue0ff]", lambda m: html.escape(chr(ord(m.group(0)) - 0xE000)), text)
 
 
 def _md_inline(raw):
     parts = []
     pos = 0
     for match in _CODE_RE.finditer(raw):
-        parts.append(_md_format(html.escape(raw[pos:match.start()], quote=True)))
+        parts.append(_md_text(raw[pos:match.start()]))
         parts.append(_code_html(match.group(1) or match.group(2)))
         pos = match.end()
-    parts.append(_md_format(html.escape(raw[pos:], quote=True)))
+    parts.append(_md_text(raw[pos:]))
     return "".join(parts)
 
 
@@ -246,6 +262,10 @@ def _md_blocks(raw):
     n = len(lines)
     while i < n:
         if not lines[i].strip():
+            i += 1
+            continue
+        if _RULE_RE.match(lines[i]):
+            blocks.append(_RULE_HTML)
             i += 1
             continue
         heading = re.match(r"#{1,6}\s+(.*)$", lines[i].strip())
@@ -269,14 +289,17 @@ def _md_blocks(raw):
                 "<%s>%s</%s>" % (tag, "".join("<li>%s</li>" % _md_inline(item) for item in items), tag)
             )
             continue
-        para = []
-        while i < n and lines[i].strip():
+        # A line ending in two spaces is a hard line break.
+        lines_out = [[]]
+        while i < n and lines[i].strip() and not _RULE_RE.match(lines[i]):
             stripped = lines[i].strip()
-            if para and (re.match(r"#{1,6}\s+\S", stripped) or _LIST_START_RE.match(lines[i])):
+            if lines_out[0] and (re.match(r"#{1,6}\s+\S", stripped) or _LIST_START_RE.match(lines[i])):
                 break
-            para.append(stripped)
+            lines_out[-1].append(stripped)
+            if lines[i].endswith("  "):
+                lines_out.append([])
             i += 1
-        blocks.append(_md_inline(" ".join(para)))
+        blocks.append("<br>".join(_md_inline(" ".join(part)) for part in lines_out if part))
     return blocks
 
 
@@ -460,7 +483,9 @@ def query_symbols(db_path, lang, owner, prefix, limit=80, public_only=False):
                 args = [lang, owner]
             if hide_private:
                 sql += " AND name NOT GLOB '_*'"
-            sql += " ORDER BY name LIMIT ?"
+            # Public names first, so a class with many _private members
+            # does not fill the limit before its public ones.
+            sql += " ORDER BY (name GLOB '_*') + (name GLOB '__*'), name LIMIT ?"
             args.append(limit)
             rows = con.execute(sql, args).fetchall()
         finally:

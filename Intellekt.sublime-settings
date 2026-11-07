@@ -18,6 +18,8 @@
     // Use an installed language server when one is found. The index is
     // the fallback.
     "lsp_enabled": true,
+    // Underline errors, warnings and notes reported by the language server.
+    "lsp_diagnostics": true,
     // How long to wait for a server before showing index completions.
     "lsp_completion_timeout_ms": 1500,
     // Per language: a command list, false to disable, or

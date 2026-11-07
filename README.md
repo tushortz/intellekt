@@ -8,7 +8,7 @@ Autocomplete and hover docs for Sublime Text. It works offline for Python, Java,
 
 On startup, Intellekt reads the languages already installed on your computer and builds an index from them. Suggestions come from that index.
 
-If a language server is installed, Intellekt uses it instead, because it gives smarter suggestions. If the server is missing or slow, the index takes over.
+If a language server is installed, Intellekt uses it instead, because it gives smarter suggestions. If the server is missing or slow, the index takes over. A server also underlines errors and warnings as you type. Hover over a squiggle to read the message.
 
 ## Language servers (optional)
 

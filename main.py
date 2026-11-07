@@ -37,20 +37,32 @@ _SCRIPTS = {
     "javascript": "js_index.js",
     "php": "php_index.php",
 }
-_MEMBER_FLAGS = sublime.INHIBIT_WORD_COMPLETIONS | sublime.DYNAMIC_COMPLETIONS
-_BARE_FLAGS = sublime.DYNAMIC_COMPLETIONS
-# One letter each. Sublime draws it small in the completion row, in the
-# theme color for that kind, instead of a color emoji.
+# INHIBIT_REORDER keeps our order: public names, then _private, then __dunder__.
+_MEMBER_FLAGS = (
+    sublime.INHIBIT_WORD_COMPLETIONS | sublime.DYNAMIC_COMPLETIONS | sublime.INHIBIT_REORDER
+)
+_BARE_FLAGS = sublime.DYNAMIC_COMPLETIONS | sublime.INHIBIT_REORDER
+# One symbol per kind, in the spirit of VS Code's icons. KIND_ID_AMBIGUOUS
+# has no theme tint, so every icon is drawn plain in the text color.
+# None of these characters has an emoji form, so none turns into a color emoji.
+_PLAIN = sublime.KIND_ID_AMBIGUOUS
 _KINDS = {
-    "function": (sublime.KIND_ID_FUNCTION, "f", "Function"),
-    "type": (sublime.KIND_ID_TYPE, "c", "Class"),
-    "variable": (sublime.KIND_ID_VARIABLE, "p", "Property"),
-    "namespace": (sublime.KIND_ID_NAMESPACE, "m", "Module"),
-    "keyword": sublime.KIND_KEYWORD,
-    "snippet": sublime.KIND_SNIPPET,
+    "type": (_PLAIN, "◈", "Class"),
+    "interface": (_PLAIN, "◎", "Interface"),
+    "enum": (_PLAIN, "≣", "Enum"),
+    "method": (_PLAIN, "⬡", "Method"),
+    "function": (_PLAIN, "ƒ", "Function"),
+    "property": (_PLAIN, "◇", "Property"),
+    "field": (_PLAIN, "◇", "Field"),
+    # Index rows call class and module members "variable".
+    "variable": (_PLAIN, "◇", "Property"),
+    "local": (_PLAIN, "⊠", "Variable"),
+    "constant": (_PLAIN, "π", "Constant"),
+    "namespace": (_PLAIN, "⧉", "Module"),
+    "keyword": (_PLAIN, "≡", "Keyword"),
+    "snippet": (_PLAIN, "⬚", "Snippet"),
 }
-_KIND_CONSTANT = (sublime.KIND_ID_VARIABLE, "k", "Constant")
-_KIND_FALLBACK = (sublime.KIND_ID_AMBIGUOUS, "•", "Symbol")
+_KIND_FALLBACK = (_PLAIN, "•", "Symbol")
 # NOTE: only the start of a very large buffer is scanned for imports and
 # assignments. Upgrade path: a background parse of the whole buffer.
 _SOURCE_CAP = 400_000
@@ -58,6 +70,18 @@ _ROOT_MARKERS = (
     ".git", "go.mod", "Cargo.toml", "pyproject.toml", "setup.py",
     "package.json", "compile_commands.json", "composer.json", "Gemfile",
 )
+
+# Severity -> (region key, color scope, gutter icon, label).
+# NOTE: hints (severity 4, such as pyright's "unused" notes) are not drawn.
+_DIAG_STYLES = {
+    1: ("intellekt.error", "region.redish", "circle", "Error"),
+    2: ("intellekt.warning", "region.yellowish", "dot", "Warning"),
+    3: ("intellekt.info", "region.bluish", "dot", "Info"),
+}
+_DIAG_FLAGS = (
+    sublime.DRAW_SQUIGGLY_UNDERLINE | sublime.DRAW_NO_FILL | sublime.DRAW_NO_OUTLINE
+)
+_DIAGS = {}      # view id -> [(Region, severity, message)]
 
 _CLIENTS = {}    # (window id, root, command, interpreter) -> lsp.Client
 _COMMANDS = {}   # (lang, interpreter) -> server spec or None
@@ -309,6 +333,8 @@ def _client(view, lang):
     client = _CLIENTS.get(key)
     if client is None:
         client = lsp.Client(cmd, root, env, settings, init)
+        if _settings().get("lsp_diagnostics", True):
+            client.on_diagnostics = _on_diagnostics
         _CLIENTS[key] = client
         client.start()
     # NOTE: a server that exited is not restarted, so a crash loop cannot
@@ -321,6 +347,61 @@ def _stop_clients(window_id=None):
         if window_id is None or key[0] == window_id:
             client.stop()
             del _CLIENTS[key]
+    if window_id is None:
+        for window in sublime.windows():
+            for view in window.views():
+                _draw_diagnostics(view, [])
+
+
+def _point(view, line, char):
+    start = view.text_point(line, 0)
+    return start + lsp.utf16_col(view.substr(view.line(start)), char)
+
+
+def _on_diagnostics(uri, diagnostics):
+    rows = lsp.diagnostic_rows(diagnostics)
+
+    def apply():
+        for window in sublime.windows():
+            for view in window.views():
+                path = view.file_name()
+                if path and lsp.file_uri(path) == uri:
+                    _draw_diagnostics(view, rows)
+
+    sublime.set_timeout(apply, 0)
+
+
+def _draw_diagnostics(view, rows):
+    found = []
+    by_severity = {severity: [] for severity in _DIAG_STYLES}
+    for start, end, severity, message in rows:
+        if severity not in _DIAG_STYLES:
+            continue
+        a, b = _point(view, *start), _point(view, *end)
+        if a == b:
+            # An empty range still needs something to underline.
+            b = view.word(a).b if view.word(a).b > a else min(a + 1, view.size())
+        region = sublime.Region(a, b)
+        by_severity[severity].append(region)
+        found.append((region, severity, message))
+    for severity, (key, scope, icon, _label) in _DIAG_STYLES.items():
+        view.add_regions(key, by_severity[severity], scope, icon, _DIAG_FLAGS)
+    _DIAGS[view.id()] = found
+    errors = len(by_severity[1])
+    warnings = len(by_severity[2])
+    parts = (["✖ %d" % errors] if errors else []) + (["⚠ %d" % warnings] if warnings else [])
+    view.set_status("intellekt", "  ".join(parts))
+
+
+def _diagnostics_at(view, region):
+    """Markdown for the diagnostics touching ``region``, or ""."""
+    lines = []
+    for found, severity, message in _DIAGS.get(view.id(), ()):
+        if found.intersects(region) or found.contains(region.a):
+            label = _DIAG_STYLES[severity][3]
+            text = re.sub(r"([\\`*_\[\]<>])", r"\\\1", message)
+            lines.append("**%s:** %s" % (label, text))
+    return "\n\n".join(lines)
 
 
 def _sync(client, view, lang):
@@ -381,7 +462,9 @@ def _lsp_completions(view, point, prefix, lang, client):
         if not rows:
             use_index()
             return
-        flags = sublime.INHIBIT_WORD_COMPLETIONS if member else 0
+        flags = sublime.INHIBIT_REORDER
+        if member:
+            flags |= sublime.INHIBIT_WORD_COMPLETIONS
         if incomplete:
             flags |= sublime.DYNAMIC_COMPLETIONS
         finish(_items_from_rows(rows), flags)
@@ -442,8 +525,8 @@ def _escape(text):
 
 
 def _icon(kind, name=""):
-    if kind == "constant" or (kind == "variable" and len(name) > 1 and name.isupper()):
-        return _KIND_CONSTANT
+    if kind in ("variable", "local") and len(name) > 1 and name.isupper():
+        kind = "constant"
     return _KINDS.get(kind, _KIND_FALLBACK)
 
 
@@ -455,7 +538,7 @@ def _annotation(signature):
 
 def _items_from_symbols(rows):
     items = []
-    for name, kind, signature, doc in rows:
+    for name, kind, signature, doc in sorted(rows, key=lambda row: lsp.underscore_rank(row[0])):
         snippet = signature or name
         items.append(sublime.CompletionItem.snippet_completion(
             name,
@@ -530,7 +613,8 @@ def _import_completions(view, point, lang, db_path):
     if not segments:
         return None
     items = []
-    for segment in segments[:80]:
+    segments = sorted(segments[:80], key=lambda seg: lsp.underscore_rank(seg["trigger"]))
+    for segment in segments:
         items.append(sublime.CompletionItem(
             segment["trigger"],
             annotation=segment["annotation"],
@@ -548,7 +632,9 @@ def _bare_completions(view, prefix, lang, db_path):
     if not rows:
         return None
     items = []
-    for trigger, annotation, kind, doc in rows[:40]:
+    for trigger, annotation, kind, doc in sorted(
+        rows[:40], key=lambda row: lsp.underscore_rank(row[0])
+    ):
         items.append(sublime.CompletionItem(
             trigger,
             annotation=annotation,
@@ -640,7 +726,21 @@ class IntellektListener(sublime_plugin.EventListener):
     def on_load(self, view):
         self._ensure_triggers(view)
 
+    def on_modified_async(self, view):
+        # Send edits shortly after typing stops, so errors update live.
+        count = view.change_count()
+
+        def flush():
+            if view.is_valid() and view.change_count() == count:
+                lang = _lang(view, 0)
+                client = _client(view, lang) if lang else None
+                if client:
+                    _sync(client, view, lang)
+
+        sublime.set_timeout_async(flush, 400)
+
     def on_close(self, view):
+        _DIAGS.pop(view.id(), None)
         path = view.file_name()
         if path:
             for client in list(_CLIENTS.values()):
@@ -685,6 +785,11 @@ class IntellektListener(sublime_plugin.EventListener):
         return _index_completions(view, point, prefix, lang)
 
     def on_hover(self, view, point, zone):
+        if zone == sublime.HOVER_GUTTER:
+            problems = _diagnostics_at(view, view.line(point))
+            if problems:
+                _popup(view, point, "", problems)
+            return
         if zone != sublime.HOVER_TEXT:
             return
         if not view.match_selector(point, _SCOPE):
@@ -692,13 +797,19 @@ class IntellektListener(sublime_plugin.EventListener):
         lang = _lang(view, point)
         if not lang:
             return
+        problems = _diagnostics_at(view, sublime.Region(point, point))
         client = _client(view, lang)
         if not client:
-            _index_hover(view, point, lang)
+            if problems:
+                _popup(view, point, "", problems)
+            else:
+                _index_hover(view, point, lang)
             return
 
         def on_reply(reply, error):
             text = "" if error else lsp.hover_text(reply)
+            if problems:
+                text = problems + ("\n\n---\n\n" + text if text else "")
             if text:
                 sublime.set_timeout(lambda: _popup(view, point, "", text), 0)
             else:
