@@ -212,11 +212,8 @@ def _member_completions(view, point, prefix, lang):
     left, _op = core.member_op(before)
     if left is None:
         return None
-    receiver = core.receiver_from(left)
-    if not receiver:
-        return None
     db_path = _db_path()
-    owner = core.resolve_owner(db_path, lang, _source(view), receiver)
+    owner = core.member_owner(db_path, lang, _source(view), left)
     if not owner:
         return None
     rows = core.query_symbols(db_path, lang, owner, prefix)
@@ -366,8 +363,7 @@ class IntellektListener(sublime_plugin.EventListener):
         stripped = before.rstrip()
         left, op = core.member_op(stripped)
         if left is not None:
-            receiver = core.receiver_from(left)
-            owner = core.resolve_owner(db_path, lang, source, receiver) if receiver else None
+            owner = core.member_owner(db_path, lang, source, left)
             if owner:
                 doc = core.symbol_doc(db_path, lang, owner, word) or core.module_doc(
                     db_path, lang, owner + op + word

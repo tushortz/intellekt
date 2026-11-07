@@ -201,7 +201,21 @@ def _snippet(name, args):
     return f"{name}({', '.join(bits)})"
 
 
-def _parse_member(stmt, kind):
+_PRIMITIVES = {
+    "void", "boolean", "byte", "char", "short", "int", "long", "float", "double", "var",
+}
+
+
+def _type_name(raw, imports):
+    """Class name for a declared type. Arrays and primitives have no members."""
+    name = re.sub(r"<.*", "", raw or "").strip()
+    if not name or raw.rstrip().endswith("]") or name in _PRIMITIVES:
+        return ""
+    return imports.get(name, name)
+
+
+def _parse_member(stmt, kind, imports=None):
+    imports = imports or {}
     compact = re.sub(r"\s+", " ", stmt).strip()
     is_iface = kind == "interface"
     if "(" in compact:
@@ -222,6 +236,7 @@ def _parse_member(stmt, kind):
             "kind": "function",
             "signature": _snippet(name, match.group("args") or ""),
             "doc": "",
+            "returns": _type_name(match.group("ret"), imports),
         }
     if not compact.startswith(("public", "protected")):
         return None
@@ -235,6 +250,7 @@ def _parse_member(stmt, kind):
         "kind": "variable",
         "signature": name,
         "doc": "",
+        "returns": _type_name(match.group("typ"), imports),
     }
 
 
@@ -245,6 +261,10 @@ def scan_source(text):
     found = re.search(r"(?:^|\n)\s*package\s+([\w.]+)\s*;", masked)
     if found:
         package = found.group(1)
+    imports = {
+        full.rsplit(".", 1)[-1]: full
+        for full in re.findall(r"(?:^|\n)\s*import\s+([\w.]+)\s*;", masked)
+    }
 
     out = []
     n = len(masked)
@@ -322,7 +342,7 @@ def scan_source(text):
                 if nxt <= i:
                     i += 1
                     continue
-                rec = _parse_member(_stmt, frame["kind"])
+                rec = _parse_member(_stmt, frame["kind"], imports)
                 if rec:
                     rec["owner"] = frame["fqcn"]
                     rec["doc"] = _doc_before(docs, i, floor)

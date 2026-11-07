@@ -242,9 +242,27 @@ def check_resolve():
             [item["trigger"] for item in children] == ["abc"],
             "from package child got %s" % children,
         )
-        check(core.receiver_from("items = ArrayList(); items") == "items", "receiver")
-        check(core.receiver_from("Foo::Bar") == "Foo::Bar", "ruby constant receiver")
-        check(core.receiver_from("self") is None, "skip self")
+        check(core.split_chain("items = ArrayList(); items") == [("", "items", False)], "receiver")
+        check(core.split_chain("Foo::Bar") == [("", "Foo", False), ("::", "Bar", False)],
+              "ruby constant receiver")
+        check(core.split_chain("self") is None, "skip self")
+        check(
+            core.split_chain("f(Path('a)').parent.resolve()") == [
+                ("", "Path", True), (".", "parent", False), (".", "resolve", True),
+            ],
+            "call chain",
+        )
+        check(core.split_chain("'a'") == [("", "''", False)], "string literal")
+        check(core.split_chain("xs[0]") is None, "subscript is not followed")
+        chained = "from datetime import datetime\nd = datetime.now().now()\ns = 'x'\n"
+        for left, want in (
+            ("datetime.now().now()", "datetime.datetime"),
+            ("d", "datetime.datetime"),
+            ("s", "builtins.str"),
+            ("[1]", "builtins.list"),
+        ):
+            got = core.member_owner(db_path, "python", chained, left)
+            check(got == want, "chain %s got %s" % (left, got))
 
         java_src = "package app;\nimport java.util.*;\nArrayList items;\n"
         check(
@@ -270,7 +288,7 @@ def check_resolve():
         check(core.member_op("items->") == ("items", "->"), "php arrow")
         check(core.member_op("obj?.") == ("obj", "?."), "optional chain")
         check(core.member_op("Foo::") == ("Foo", "::"), "colon colon")
-        check(core.receiver_from("$items") == "$items", "php receiver")
+        check(core.split_chain("$items") == [("", "$items", False)], "php receiver")
 
         core.write_language(db_path, "javascript", "node", "1", [
             {"t": "m", "name": "fs", "doc": "files"},
@@ -387,7 +405,9 @@ def check_java_scan():
     check("String name" in add[0]["signature"], "add signature: %s" % add[0]["signature"])
     check("Adds a name" in add[0]["doc"], "add doc: %s" % add[0]["doc"])
     check(symbols(records, "count", "demo.Widget"), "count field missing")
-    check(symbols(records, "get", "demo.Widget"), "get method missing")
+    get = symbols(records, "get", "demo.Widget")
+    check(get and get[0]["returns"] == "String", "get return type: %s" % get)
+    check(add[0]["returns"] == "", "void has no return type")
     check(symbols(records, "ping", "demo.Widget.Inner"), "inner method missing")
     check(not symbols(records, "ping", "demo.Widget"), "inner method leaked onto Widget")
 

@@ -43,7 +43,7 @@ SEP = {
     "matlab": ".",
 }
 # Bumped when the index contents change so an existing cache is rebuilt.
-_INDEX_VERSION = "7"
+_INDEX_VERSION = "8"
 
 # Status, indexing, and the completion scope walk this list.
 LANGS = (
@@ -162,9 +162,6 @@ CREATE TABLE IF NOT EXISTS meta (
 """
 
 _KINDS = {"function", "type", "variable", "namespace"}
-_RECEIVER_RE = re.compile(
-    r"(\$?[A-Za-z_][\w]*(?:(?:\?\.|->|\.|::)\$?[A-Za-z_]\w*)*)$"
-)
 _SKIP_RECEIVERS = {"self", "this", "super", "cls", "$this"}
 
 # NOTE: one language's module list is kept in memory so import completion
@@ -793,17 +790,6 @@ def matlab_assigns(source):
     return assigned, calls
 
 
-def receiver_from(text):
-    """Identifier or dotted name at the end of ``text``, before a member operator."""
-    match = _RECEIVER_RE.search(text.rstrip())
-    if not match:
-        return None
-    token = match.group(1)
-    if token in _SKIP_RECEIVERS or token[-1].isdigit():
-        return None
-    return token
-
-
 def member_op(text):
     """Return ``(left, op)`` when ``text`` ends with ``.``, ``?.``, ``->``, or ``::``."""
     text = (text or "").rstrip()
@@ -811,6 +797,176 @@ def member_op(text):
         if text.endswith(op):
             return text[:-len(op)], op
     return None, None
+
+
+# Owners for a literal at the head of a chain. Other languages have no
+# builtin type for these in their index.
+_LITERALS = {
+    "python": {
+        "''": "builtins.str", "b''": "builtins.bytes",
+        "[]": "builtins.list", "{}": "builtins.dict",
+    },
+    "java": {"''": "java.lang.String"},
+    "csharp": {"''": "System.String"},
+}
+_IDENT_RE = re.compile(r"[$@]?[A-Za-z_]\w*$")
+
+
+def _opener(text, end):
+    """Index of the bracket that opens the one at ``text[end]``, or -1.
+
+    NOTE: quotes are skipped but escapes inside them are not. A string
+    argument that holds an escaped quote breaks the match, and the chain
+    is then left unresolved.
+    """
+    pairs = {")": "(", "]": "[", "}": "{"}
+    stack = []
+    i = end
+    while i >= 0:
+        char = text[i]
+        if char in "'\"`":
+            i = text.rfind(char, 0, i)
+            if i < 0:
+                return -1
+        elif char in pairs:
+            stack.append(pairs[char])
+        elif char in "([{":
+            if not stack or stack.pop() != char:
+                return -1
+            if not stack:
+                return i
+        i -= 1
+    return -1
+
+
+def split_chain(text):
+    """Steps of the expression that ends ``text``, or None.
+
+    Each step is ``(op, name, called)``. The first step has no op and may
+    be a literal: ``"''"``, ``"b''"``, ``"[]"`` or ``"{}"``.
+    ``Path('x').parent.resolve()`` is
+    ``[("", "Path", True), (".", "parent", False), (".", "resolve", True)]``.
+    An indexed step (``xs[0]``) is not followed.
+    """
+    text = (text or "").rstrip()
+    steps = []
+    while True:
+        called = False
+        if text.endswith(")"):
+            start = _opener(text, len(text) - 1)
+            if start < 0:
+                return None
+            text, called = text[:start].rstrip(), True
+        if not text:
+            return None
+        last = text[-1]
+        if last in "'\"`" and not called:
+            start = text.rfind(last, 0, len(text) - 1)
+            if start < 0:
+                return None
+            name = "b''" if text[start - 1:start] == "b" else "''"
+            steps.append(("", name, False))
+            break
+        if last in "]}" and not called:
+            start = _opener(text, len(text) - 1)
+            if start < 0:
+                return None
+            before = text[:start].rstrip()
+            if before and (before[-1].isalnum() or before[-1] in "_)]"):
+                return None
+            steps.append(("", "[]" if last == "]" else "{}", False))
+            break
+        match = _IDENT_RE.search(text)
+        if not match:
+            return None
+        name = match.group(0)
+        text = text[:match.start()]
+        left, op = member_op(text)
+        if left is None:
+            if text[-1:].isalnum() or text[-1:] == "_":
+                return None
+            steps.append(("", name, called))
+            break
+        steps.append((op, name, called))
+        text = left
+    steps.reverse()
+    if steps[0][1] in _SKIP_RECEIVERS:
+        return None
+    return steps
+
+
+def _java_owner(db_path, owner, type_name):
+    """``String`` from a member of ``java.util.Foo`` is found in java.lang."""
+    if not type_name or module_exists(db_path, "java", type_name):
+        return type_name or None
+    package = owner.rsplit(".", 1)[0]
+    for candidate in (package + "." + type_name, "java.lang." + type_name):
+        if module_exists(db_path, "java", candidate):
+            return candidate
+    return None
+
+
+def _follow(db_path, lang, owner, op, name, called):
+    """Owner after one step from ``owner``, or None."""
+    if lang == "python":
+        qualified = owner + "." + name
+        if called:
+            return _call_result(db_path, qualified) or None
+        if module_exists(db_path, lang, qualified):
+            return qualified
+        info = symbol_info(db_path, lang, owner, name)
+        if not info:
+            return None
+        if info[0] == "type":
+            return qualified
+        return _return_owner(db_path, owner, info[1]) or None
+    sep = "::" if op == "::" and lang in ("rust", "cpp") else "."
+    found = _member_ref(db_path, lang, owner + sep + name, called)
+    if lang == "java" and found:
+        return _java_owner(db_path, owner, found)
+    return found
+
+
+def member_owner(db_path, lang, source, left, depth=0):
+    """Owner of the expression before a member operator, or None.
+
+    The longest leading run of plain names goes through ``resolve_owner``.
+    Each later step follows the return type recorded in the index.
+    """
+    steps = split_chain(left)
+    if not steps or depth > 4:
+        return None
+    head = steps[0][1]
+    if head in ("''", "b''", "[]", "{}"):
+        owner, used = _LITERALS.get(lang, {}).get(head), 1
+    else:
+        owner, used = None, 0
+        plain = 1
+        while plain < len(steps) and not steps[plain - 1][2]:
+            plain += 1
+        for used in range(plain, 0, -1):
+            expr = steps[0][1] + "".join(op + name for op, name, _ in steps[1:used])
+            owner = resolve_owner(db_path, lang, source, expr, depth)
+            if owner:
+                break
+        if owner and steps[used - 1][2]:
+            owner = _called(db_path, lang, owner)
+    for op, name, called in steps[used:]:
+        if not owner:
+            return None
+        owner = _follow(db_path, lang, owner, op, name, called)
+    return owner
+
+
+def _called(db_path, lang, owner):
+    """Instance type after calling ``owner``: a class or a typed function."""
+    if lang == "python":
+        return _call_result(db_path, owner) or None
+    found = _member_ref(db_path, lang, owner, True)
+    if found:
+        return _java_owner(db_path, owner, found) if lang == "java" else found
+    # Rust ``Vec::new`` and Go ``bytes.NewBuffer`` already resolve to the type.
+    return owner if module_exists(db_path, lang, owner) else None
 
 
 # list[int] and X | Y parse on the user's interpreter. Sublime's plugin host
@@ -996,6 +1152,35 @@ def _expr_name(node):
     return _dotted(node), False
 
 
+def _chain_text(node):
+    """Source-like text for a call chain or literal, or ""."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        base = _chain_text(node.value)
+        return base + "." + node.attr if base else ""
+    if isinstance(node, ast.Call):
+        base = _chain_text(node.func)
+        return base + "()" if base else ""
+    if isinstance(node, ast.JoinedStr):
+        return "''"
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, str):
+            return "''"
+        if isinstance(node.value, bytes):
+            return "b''"
+        return ""
+    if isinstance(node, (ast.List, ast.ListComp)):
+        return "[]"
+    if isinstance(node, (ast.Dict, ast.DictComp)):
+        return "{}"
+    if isinstance(node, (ast.Set, ast.SetComp)):
+        return "set()"
+    if isinstance(node, ast.Tuple):
+        return "tuple()"
+    return ""
+
+
 def _arg_nodes(args):
     nodes = list(getattr(args, "posonlyargs", ()))
     nodes.extend(args.args)
@@ -1012,6 +1197,9 @@ class _PyFacts(ast.NodeVisitor):
         self.calls = set()
         self.annotated = {}
         self.elements = {}
+        # Values that are not a plain name or call, kept as text for
+        # member_owner: "datetime.now().date()", "''", "[]".
+        self.chains = {}
 
     def visit_Import(self, node):
         for alias in node.names:
@@ -1062,6 +1250,20 @@ class _PyFacts(ast.NodeVisitor):
             if isinstance(target, ast.Name):
                 self._assign(target.id, node.value)
 
+    def visit_With(self, node):
+        self._with(node)
+
+    def visit_AsyncWith(self, node):
+        self._with(node)
+
+    def _with(self, node):
+        # NOTE: assumes __enter__ returns self, true for files and sessions.
+        for item in node.items:
+            if isinstance(item.optional_vars, ast.Name):
+                self._assign(item.optional_vars.id, item.context_expr)
+        for stmt in node.body:
+            self.visit(stmt)
+
     def visit_For(self, node):
         self._for(node)
 
@@ -1099,8 +1301,15 @@ class _PyFacts(ast.NodeVisitor):
         if name in _SKIP_RECEIVERS:
             return
         expr, is_call = _expr_name(value)
-        if not expr or expr == name:
+        if not expr:
+            text = _chain_text(value)
+            if text and not text.startswith(name + "."):
+                self.chains[name] = text
+                self.assigned.pop(name, None)
             return
+        if expr == name:
+            return
+        self.chains.pop(name, None)
         self.assigned[name] = expr
         if is_call:
             self.calls.add(name)
@@ -1249,7 +1458,7 @@ def _member_ref(db_path, lang, qualified, called):
     info = symbol_info(db_path, lang, owner, name)
     if not info:
         return None
-    if called and info[1]:
+    if (called or info[0] == "variable") and info[1]:
         return info[1]
     if info[0] == "type":
         return qualified
@@ -1558,13 +1767,15 @@ def _types_under(db_path, lang, namespace, prefix, add, sep="."):
         add(rest, name, "type", doc)
 
 
-def resolve_owner(db_path, lang, source, expr):
+def resolve_owner(db_path, lang, source, expr, depth=0):
     """Qualified owner for the name before a dot, or None."""
     if not expr:
         return None
     if lang == "python":
         facts = _python_facts(source)
         bound = facts.bound
+        if expr in facts.chains:
+            return member_owner(db_path, lang, source, facts.chains[expr], depth + 1)
         assigned, calls, annotated = facts.assigned, facts.calls, facts.annotated
         if expr in assigned:
             resolved = _resolve_python_expr(bound, assigned[expr]) or ""
