@@ -1,16 +1,18 @@
 """Runtime detection, the symbol cache, and completion lookup.
 
-The cache is a SQLite file outside the package (the package may be a
-read-only zip). Python, Ruby, JavaScript, and PHP fill it from JSONL
-produced by the scripts in ``indexers/``. Java, TypeScript, C#, Go, Rust,
-and C++ fill it from the in-process scanners.
+The cache is SQLite outside the package (the package may be a read-only
+zip): one file for most languages, and one per Python interpreter so each
+virtual environment keeps its own packages. Python, Ruby, JavaScript, and
+PHP fill it from JSONL produced by the scripts in ``indexers/``. Java,
+TypeScript, C#, Go, Rust, and C++ fill it from the in-process scanners.
 
 NOTE: Python names are resolved from an ``ast`` of the buffer. A line that
 does not parse (the one being typed) is replaced with ``pass`` and the parse
 is retried. Annotations and recorded return types are used.
 ``a = datetime.now()`` follows ``now`` when the index has a return type, or
 when ``now`` is a classmethod. The other languages stay textual. There is
-no type checker. A language server is the upgrade path.
+no type checker here. ``lsp.py`` uses an installed language server instead
+when there is one.
 """
 
 import ast
@@ -408,6 +410,27 @@ def write_language(db_path, lang, source, version, records):
         raise
     _module_cache.clear()
     return len(sym_rows)
+
+
+def drop_language(db_path, lang):
+    """Remove one language from a cache. Used once to move Python out of the
+    shared file into per-interpreter files."""
+    if not db_path or not os.path.exists(db_path):
+        return
+    try:
+        con = _connect(db_path)
+        try:
+            if not con.execute("SELECT 1 FROM meta WHERE lang = ?", (lang,)).fetchone():
+                return
+            for table in ("symbols", "modules", "meta"):
+                con.execute("DELETE FROM %s WHERE lang = ?" % table, (lang,))
+            con.commit()
+            con.execute("VACUUM")
+        finally:
+            con.close()
+    except sqlite3.Error as err:
+        print("Intellekt: could not clean %s from the cache: %s" % (lang, err))
+    _module_cache.clear()
 
 
 def query_symbols(db_path, lang, owner, prefix, limit=80, public_only=False):
@@ -1988,6 +2011,59 @@ def _run_version(argv):
     return text.splitlines()[0].strip() if text else ""
 
 
+_VENV_DIRS = (".venv", "venv", "env", ".env", "virtualenv")
+
+
+def _venv_python(prefix):
+    if not prefix:
+        return ""
+    for rel in (("bin", "python3"), ("bin", "python"), ("Scripts", "python.exe")):
+        exe = os.path.join(prefix, *rel)
+        if os.path.isfile(exe):
+            return exe
+    return ""
+
+
+def find_venv(file_path, folders=()):
+    """Interpreter of the virtual environment that owns ``file_path``, or "".
+
+    Walks up from the file looking for ``.venv``, ``venv``, ``env``, ``.env``
+    or ``virtualenv`` holding a ``pyvenv.cfg``. The walk stops at the
+    project folder that contains the file. Then ``$VIRTUAL_ENV`` and
+    ``$CONDA_PREFIX`` are tried.
+    NOTE: Poetry and Pipenv environments outside the project are not found.
+    Upgrade path: ask ``poetry env info -p``. Until then, set
+    ``python_executable``.
+    """
+    roots = [os.path.abspath(folder) for folder in folders or ()]
+    if file_path:
+        current = os.path.dirname(os.path.abspath(file_path))
+    elif roots:
+        current = roots[0]
+    else:
+        current = ""
+    stop = max(
+        (root for root in roots if current == root or current.startswith(root + os.sep)),
+        key=len, default="",
+    )
+    while current:
+        for name in _VENV_DIRS:
+            prefix = os.path.join(current, name)
+            if os.path.isfile(os.path.join(prefix, "pyvenv.cfg")):
+                exe = _venv_python(prefix)
+                if exe:
+                    return exe
+        parent = os.path.dirname(current)
+        if current == stop or parent == current:
+            break
+        current = parent
+    for var in ("VIRTUAL_ENV", "CONDA_PREFIX"):
+        exe = _venv_python(os.environ.get(var, ""))
+        if exe:
+            return exe
+    return ""
+
+
 def detect_python(executable=""):
     exe = executable or shutil.which("python3") or shutil.which("python")
     if not exe or not os.path.isfile(exe):
@@ -2435,10 +2511,10 @@ def detect_all(
     }
 
 
-def status_text(db_path, detected):
+def status_text(db_path, detected, langs=LANGS):
     meta = read_meta(db_path)
     lines = []
-    for lang in LANGS:
+    for lang in langs:
         info = detected.get(lang)
         if not info:
             lines.append(f"{lang}: not installed")

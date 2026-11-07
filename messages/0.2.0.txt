@@ -1,0 +1,12 @@
+What's new in 0.2.0
+-------------------
+
+* Uses an installed language server (pyright, gopls, clangd,
+  rust-analyzer and more) for smarter suggestions. The offline index is
+  still used when no server is installed.
+* Finds your project's Python virtual environment and suggests the
+  packages installed in it.
+* Suggestions continue after a call, for example
+  datetime.now(). or "text".strip().
+* Finds tools installed with Homebrew, nvm, Go and Cargo, even when
+  Sublime is opened from the Dock.

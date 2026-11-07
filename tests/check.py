@@ -15,6 +15,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import core
+import lsp
 from indexers import (
     cpp_src, cs_src, go_src, java_src, markup_src, matlab_src, perl_src,
     rust_src, ts_src,
@@ -816,7 +817,97 @@ def check_markup_perl_matlab():
         shutil.rmtree(directory)
 
 
+def check_venv():
+    directory = os.path.realpath(tempfile.mkdtemp(prefix="intellekt-venv-"))
+    try:
+        exe = os.path.join(directory, ".venv", "bin", "python")
+        os.makedirs(os.path.dirname(exe))
+        open(os.path.join(directory, ".venv", "pyvenv.cfg"), "w").close()
+        open(exe, "w").close()
+        source = os.path.join(directory, "app", "pkg", "mod.py")
+        os.makedirs(os.path.dirname(source))
+        check(core.find_venv(source, [directory]) == exe, "venv above the file")
+        inner = os.path.join(directory, "app")
+        saved = dict(os.environ)
+        os.environ.pop("VIRTUAL_ENV", None)
+        os.environ.pop("CONDA_PREFIX", None)
+        try:
+            check(core.find_venv(source, [inner]) == "", "walk stops at the project folder")
+        finally:
+            os.environ.update(saved)
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def check_lsp_parsing():
+    rows, incomplete = lsp.completion_rows({"isIncomplete": True, "items": [
+        {"label": " push_back(int x)", "kind": 2, "detail": "void",
+         "textEdit": {"newText": "push_back(${1:int x})"}, "insertTextFormat": 2},
+        {"label": "size", "kind": 5, "documentation": {"kind": "markdown", "value": "n"}},
+    ]})
+    check(incomplete, "isIncomplete")
+    check(rows[0] == ("push_back(int x)", "void", "push_back(${1:int x})", True, "function", ""),
+          "snippet row %s" % (rows[0],))
+    check(rows[1][2] == "size" and rows[1][5] == "n", "plain row %s" % (rows[1],))
+    check(lsp.hover_text({"contents": {"language": "go", "value": "func F()"}})
+          == "```go\nfunc F()\n```", "marked string hover")
+    check(lsp.utf16_len("a\U0001F600") == 3, "utf-16 length")
+
+
+def _lsp_complete(lang, root, path, text, want):
+    """Complete at the end of ``text`` with the real server, if installed."""
+    cmd = lsp.find_command(lang, path=lsp.search_path())
+    if not cmd:
+        print("skip: no %s server" % lang)
+        return
+    with open(path, "w") as handle:
+        handle.write(text)
+    client = lsp.Client(cmd, root)
+    client.start()
+    try:
+        lines = text.split("\n")
+        done = __import__("threading").Event()
+        got = {}
+
+        def reply(result, error):
+            got["rows"] = lsp.completion_rows(result)[0] if not error else []
+            got["error"] = error
+            done.set()
+
+        client.sync(path, lang, text, 1)
+        client.request("textDocument/completion", {
+            "textDocument": {"uri": lsp.file_uri(path)},
+            "position": {"line": len(lines) - 1, "character": lsp.utf16_len(lines[-1])},
+        }, reply)
+        check(done.wait(60), "%s did not answer" % cmd[0])
+        labels = [row[0] for row in got["rows"]]
+        check(any(label.startswith(want) for label in labels),
+              "%s: %s missing from %s %s" % (cmd[0], want, labels[:10], got["error"]))
+    finally:
+        client.stop()
+
+
+def check_lsp_servers():
+    directory = os.path.realpath(tempfile.mkdtemp(prefix="intellekt-lsp-"))
+    try:
+        _lsp_complete(
+            "cpp", directory, os.path.join(directory, "main.cpp"),
+            "#include <vector>\nint main() {\n  std::vector<int> v;\n  v.", "push_back",
+        )
+        with open(os.path.join(directory, "go.mod"), "w") as handle:
+            handle.write("module demo\n\ngo 1.21\n")
+        _lsp_complete(
+            "go", directory, os.path.join(directory, "main.go"),
+            'package main\n\nimport "strings"\n\nfunc main() {\n\tstrings.', "Builder",
+        )
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
 def main():
+    check_venv()
+    check_lsp_parsing()
+    check_lsp_servers()
     check_markdown()
     check_cache()
     check_resolve()

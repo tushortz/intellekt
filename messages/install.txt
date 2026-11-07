@@ -1,14 +1,25 @@
 INTELLEKT
 =========
 
-Offline completions for Python, Java, and Ruby.
+Autocomplete and hover docs for Python, Java, JavaScript, TypeScript, Go,
+Rust, C/C++, C#, PHP, Ruby, Perl, MATLAB, CSS and HTML.
 
-Intellekt indexes the Python, Ruby, and JDK already installed on this machine.
-It does not download definitions and it does not need a settings change when
-those tools are on PATH.
+No setup needed. Intellekt reads the languages already installed on your
+computer, and your project's Python virtual environment. The first scan
+runs in the background, and the status bar shows its progress.
 
-The first index runs in the background. The status bar shows progress.
+For smarter suggestions, install a language server for the languages you
+use, for example:
+
+    Python      npm i -g pyright
+    JS / TS     npm i -g typescript typescript-language-server
+    Rust        rustup component add rust-analyzer
+
+Go (gopls) and C/C++ (clangd) are used when present. See the README for
+the full list.
+
 Command Palette:
 
 * Intellekt: Index Status
 * Intellekt: Rebuild Index
+* Intellekt: Restart Language Servers

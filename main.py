@@ -1,18 +1,24 @@
-"""Offline completions for the languages in ``core.LANGS``.
+"""Completions and hover for the languages in ``core.LANGS``.
 
-On load, Intellekt indexes the toolchains already installed on this
-machine into a SQLite cache. Completions and hover text are read from that
-cache. Nothing is downloaded and no third-party Python package is imported.
+A language server is used when one is installed (see ``lsp.SERVERS``).
+Otherwise, or when it is slow or returns nothing, completions and hover
+text come from a SQLite index of the toolchains on this machine. Nothing
+is downloaded and no third-party Python package is imported.
+
+Python is indexed per interpreter. The virtual environment of the file
+being edited is found by ``core.find_venv`` and gets its own cache file.
 """
 
+import hashlib
 import os
 import re
+import shutil
 import threading
 
 import sublime
 import sublime_plugin
 
-from . import core
+from . import core, lsp
 from .indexers import (
     cpp_src, cs_src, go_src, java_src, markup_src, matlab_src, perl_src,
     rust_src, ts_src,
@@ -40,37 +46,104 @@ _KINDS = {
     "type": (sublime.KIND_ID_TYPE, "c", "Class"),
     "variable": (sublime.KIND_ID_VARIABLE, "p", "Property"),
     "namespace": (sublime.KIND_ID_NAMESPACE, "m", "Module"),
+    "keyword": sublime.KIND_KEYWORD,
+    "snippet": sublime.KIND_SNIPPET,
 }
 _KIND_CONSTANT = (sublime.KIND_ID_VARIABLE, "k", "Constant")
 _KIND_FALLBACK = (sublime.KIND_ID_AMBIGUOUS, "•", "Symbol")
 # NOTE: only the start of a very large buffer is scanned for imports and
 # assignments. Upgrade path: a background parse of the whole buffer.
 _SOURCE_CAP = 400_000
+_ROOT_MARKERS = (
+    ".git", "go.mod", "Cargo.toml", "pyproject.toml", "setup.py",
+    "package.json", "compile_commands.json", "composer.json", "Gemfile",
+)
+
+_CLIENTS = {}    # (window id, root, command, interpreter) -> lsp.Client
+_COMMANDS = {}   # (lang, interpreter) -> server spec or None
+_VENVS = {}      # (file, folders) -> interpreter
+_PY_SEEN = set()  # interpreters whose index was checked this session
 
 
 def plugin_loaded():
-    sublime.set_timeout_async(lambda: ensure_indexes(False), 0)
+    _spawn(_startup)
+
+
+def _startup():
+    # NOTE: this widens PATH for the whole plugin host, other packages
+    # included, so every tool lookup and child process (npm, go env, the
+    # indexers) finds what the user's terminal finds.
+    os.environ["PATH"] = lsp.search_path()
+    core.drop_language(_db_path(), "python")
+    ensure_indexes(False)
+
+
+def plugin_unloaded():
+    _stop_clients()
+
+
+def _spawn(fn):
+    # Indexing can take a minute. Its own thread keeps Sublime's async
+    # thread free for completions and hover.
+    threading.Thread(target=fn, daemon=True).start()
 
 
 def _status(message):
     sublime.set_timeout(lambda: sublime.status_message(message), 0)
 
 
-def _db_path():
-    return os.path.join(sublime.cache_path(), "Intellekt", "index.sqlite")
-
-
 def _settings():
     return sublime.load_settings(_SETTINGS)
 
 
-def _detected():
+def _cache_dir():
+    return os.path.join(sublime.cache_path(), "Intellekt")
+
+
+def _python_db(exe):
+    """One cache per interpreter, so each venv keeps its own site-packages."""
+    key = hashlib.sha1(exe.encode("utf-8")).hexdigest()[:12]
+    return os.path.join(_cache_dir(), "python-%s.sqlite" % key)
+
+
+def _db_path(view=None, lang=None):
+    if lang == "python":
+        return _python_db(_python_exe(view))
+    return os.path.join(_cache_dir(), "index.sqlite")
+
+
+def _python_exe(view=None):
+    """The interpreter for ``view``: the setting, its venv, or the system one."""
+    chosen = _settings().get("python_executable") or ""
+    if chosen:
+        return chosen
+    window = (view.window() if view else None) or sublime.active_window()
+    if view is None and window:
+        view = window.active_view()
+    path = view.file_name() if view else None
+    folders = tuple(window.folders()) if window else ()
+    key = (path, folders)
+    if key not in _VENVS:
+        _VENVS[key] = (
+            core.find_venv(path, folders)
+            or shutil.which("python3", path=lsp.search_path())
+            or shutil.which("python", path=lsp.search_path())
+            or ""
+        )
+    return _VENVS[key]
+
+
+def _is_venv(exe):
+    return os.path.isfile(os.path.join(os.path.dirname(os.path.dirname(exe)), "pyvenv.cfg"))
+
+
+def _detected(view=None):
     settings = _settings()
     sources = settings.get("java_sources") or []
     if not isinstance(sources, list):
         sources = []
     return core.detect_all(
-        python_executable=settings.get("python_executable") or "",
+        python_executable=_python_exe(view),
         ruby_executable=settings.get("ruby_executable") or "",
         java_home=settings.get("java_home") or "",
         java_sources=sources,
@@ -121,17 +194,28 @@ def _produce(lang, info):
     yield from core.run_indexer(info["executable"], _SCRIPTS[lang])
 
 
-def ensure_indexes(force):
-    if not _LOCK.acquire(blocking=False):
-        _status("Intellekt: index already running")
-        return
+def ensure_indexes(force, python_exe=None):
+    """Build stale indexes. With ``python_exe``, only that interpreter's.
+
+    A full build skips when another is running. A single-interpreter build
+    waits for it, so a venv opened during the first build is still indexed.
+    """
+    if python_exe is None:
+        if not _LOCK.acquire(blocking=False):
+            _status("Intellekt: index already running")
+            return
+    else:
+        _LOCK.acquire()
     try:
-        detected = _detected()
-        db_path = _db_path()
+        if python_exe is None:
+            detected = _detected()
+        else:
+            detected = {"python": core.detect_python(python_exe)}
         for lang in core.LANGS:
             info = detected.get(lang)
             if not info:
                 continue
+            db_path = _python_db(info["executable"]) if lang == "python" else _db_path()
             if not force and core.is_fresh(db_path, lang, info["source"], info["version"]):
                 continue
             _status("Intellekt: indexing %s…" % lang)
@@ -147,6 +231,183 @@ def ensure_indexes(force):
     finally:
         _LOCK.release()
 
+
+def _ensure_python_index(view):
+    exe = _python_exe(view)
+    if exe and exe not in _PY_SEEN:
+        _PY_SEEN.add(exe)
+        _spawn(lambda: ensure_indexes(False, python_exe=exe))
+
+
+# ---- language servers -------------------------------------------------------
+
+def _server_spec(lang, interpreter):
+    """``(argv, env, settings, init_options)`` for ``lang``, or None."""
+    key = (lang, interpreter)
+    if key in _COMMANDS:
+        return _COMMANDS[key]
+    override = (_settings().get("lsp_servers") or {}).get(lang)
+    extra, init = {}, {}
+    if isinstance(override, dict):
+        extra = override.get("settings") or {}
+        init = dict(override.get("initialization_options") or {})
+        override = override.get("command")
+    bins = [os.path.dirname(interpreter)] if interpreter else []
+    node = _settings().get("node_executable") or shutil.which("node", path=lsp.search_path())
+    if node:
+        # typescript-language-server and friends start with "#!/usr/bin/env node".
+        bins.append(os.path.dirname(node))
+    path = lsp.search_path(bins)
+    cmd = lsp.find_command(lang, override, path)
+    spec = None
+    if cmd:
+        env = dict(os.environ, PATH=path)
+        settings = {}
+        if lang == "python" and interpreter:
+            prefix = os.path.dirname(os.path.dirname(interpreter))
+            if _is_venv(interpreter):
+                env["VIRTUAL_ENV"] = prefix
+            # Read by pyright/basedpyright, pylsp, and jedi-language-server.
+            settings = {
+                "python": {"pythonPath": interpreter},
+                "pylsp": {"plugins": {"jedi": {"environment": interpreter}}},
+            }
+            init.setdefault("workspace", {"environmentPath": interpreter})
+        settings.update(extra)
+        spec = (cmd, env, settings, init)
+    _COMMANDS[key] = spec
+    return spec
+
+
+def _root(window, path):
+    folders = [f for f in window.folders() if path.startswith(f.rstrip(os.sep) + os.sep)]
+    if folders:
+        return max(folders, key=len)
+    current = os.path.dirname(path)
+    while True:
+        if any(os.path.exists(os.path.join(current, m)) for m in _ROOT_MARKERS):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            return os.path.dirname(path)
+        current = parent
+
+
+def _client(view, lang):
+    """A running server for ``view``, started on first use, or None."""
+    path = view.file_name()
+    window = view.window()
+    if not path or not window or not _settings().get("lsp_enabled", True):
+        return None
+    interpreter = _python_exe(view) if lang == "python" else ""
+    spec = _server_spec(lang, interpreter)
+    if not spec:
+        return None
+    cmd, env, settings, init = spec
+    root = _root(window, path)
+    key = (window.id(), root, tuple(cmd), interpreter)
+    client = _CLIENTS.get(key)
+    if client is None:
+        client = lsp.Client(cmd, root, env, settings, init)
+        _CLIENTS[key] = client
+        client.start()
+    # NOTE: a server that exited is not restarted, so a crash loop cannot
+    # spin. "Intellekt: Restart Language Servers" starts it again.
+    return None if client.dead else client
+
+
+def _stop_clients(window_id=None):
+    for key, client in list(_CLIENTS.items()):
+        if window_id is None or key[0] == window_id:
+            client.stop()
+            del _CLIENTS[key]
+
+
+def _sync(client, view, lang):
+    text = view.substr(sublime.Region(0, view.size()))
+    return client.sync(view.file_name(), lang, text, view.change_count())
+
+
+def _position(view, point):
+    row, _col = view.rowcol(point)
+    start = view.text_point(row, 0)
+    return {"line": row, "character": lsp.utf16_len(view.substr(sublime.Region(start, point)))}
+
+
+def _items_from_rows(rows):
+    items = []
+    for trigger, annotation, text, snippet, kind, doc in rows:
+        icon = _icon(kind, trigger)
+        details = _details(doc[:300])
+        if snippet:
+            items.append(sublime.CompletionItem.snippet_completion(
+                trigger, text, annotation=annotation, kind=icon, details=details,
+            ))
+        else:
+            items.append(sublime.CompletionItem(
+                trigger, annotation=annotation, completion=text,
+                completion_format=sublime.COMPLETION_FORMAT_TEXT,
+                kind=icon, details=details,
+            ))
+    return items
+
+
+def _lsp_completions(view, point, prefix, lang, client):
+    """Ask the server. The index answers if it fails, is empty, or is slow."""
+    result = sublime.CompletionList()
+    lock = threading.Lock()
+    state = {"done": False}
+    start = point - len(prefix)
+    member = core.member_op(view.substr(sublime.Region(max(0, start - 3), start)))[0] is not None
+
+    def finish(items, flags):
+        with lock:
+            if state["done"]:
+                return
+            state["done"] = True
+        sublime.set_timeout(lambda: result.set_completions(items, flags), 0)
+
+    def use_index():
+        if state["done"]:
+            return
+        found = _index_completions(view, point, prefix, lang)
+        if found:
+            finish(found.completions, found.flags)
+        else:
+            finish([], 0)
+
+    def on_reply(reply, error):
+        rows, incomplete = lsp.completion_rows(reply) if not error else ([], False)
+        if not rows:
+            use_index()
+            return
+        flags = sublime.INHIBIT_WORD_COMPLETIONS if member else 0
+        if incomplete:
+            flags |= sublime.DYNAMIC_COMPLETIONS
+        finish(_items_from_rows(rows), flags)
+
+    trigger = view.substr(start - 1) if start else ""
+    triggers = (client.capabilities.get("completionProvider") or {}).get("triggerCharacters") or []
+    context = {"triggerKind": 1}
+    if not prefix and trigger in triggers:
+        context = {"triggerKind": 2, "triggerCharacter": trigger}
+    rid = client.request("textDocument/completion", {
+        "textDocument": {"uri": _sync(client, view, lang)},
+        "position": _position(view, point),
+        "context": context,
+    }, on_reply)
+
+    def timed_out():
+        if rid is not None and not state["done"]:
+            client.cancel(rid)
+        use_index()
+
+    timeout = _settings().get("lsp_completion_timeout_ms", 1500) / 1000.0
+    threading.Timer(timeout, timed_out).start()
+    return result
+
+
+# ---- index completions ------------------------------------------------------
 
 def _lang(view, point):
     for selector, lang in core.LANG_SELECTORS:
@@ -181,7 +442,7 @@ def _escape(text):
 
 
 def _icon(kind, name=""):
-    if kind == "variable" and len(name) > 1 and name.isupper():
+    if kind == "constant" or (kind == "variable" and len(name) > 1 and name.isupper()):
         return _KIND_CONSTANT
     return _KINDS.get(kind, _KIND_FALLBACK)
 
@@ -206,13 +467,12 @@ def _items_from_symbols(rows):
     return items
 
 
-def _member_completions(view, point, prefix, lang):
+def _member_completions(view, point, prefix, lang, db_path):
     start = point - len(prefix)
     before = view.substr(sublime.Region(max(0, start - 300), start))
     left, _op = core.member_op(before)
     if left is None:
         return None
-    db_path = _db_path()
     owner = core.member_owner(db_path, lang, _source(view), left)
     if not owner:
         return None
@@ -222,11 +482,10 @@ def _member_completions(view, point, prefix, lang):
     return sublime.CompletionList(_items_from_symbols(rows), _MEMBER_FLAGS)
 
 
-def _markup_completions(view, point, lang):
+def _markup_completions(view, point, lang, db_path):
     if lang not in ("css", "html"):
         return None
     line = view.substr(sublime.Region(view.line(point).a, point))
-    db_path = _db_path()
     if lang == "css":
         found = core.css_value(line)
         if not found:
@@ -251,13 +510,12 @@ def _markup_completions(view, point, lang):
     return sublime.CompletionList(_items_from_symbols(rows), _MEMBER_FLAGS)
 
 
-def _import_completions(view, point, lang):
+def _import_completions(view, point, lang, db_path):
     line = view.substr(sublime.Region(view.line(point).a, point))
     typed = core.import_typed(lang, line)
     if typed is None:
         return None
     sep = core.SEP[lang]
-    db_path = _db_path()
     symbols = []
     if lang == "python" and re.match(r"\s*from\s+\S", line) and sep in typed:
         owner = typed[:-len(sep)] if typed.endswith(sep) else typed.rsplit(sep, 1)[0]
@@ -283,10 +541,10 @@ def _import_completions(view, point, lang):
     return sublime.CompletionList(items, _MEMBER_FLAGS)
 
 
-def _bare_completions(view, prefix, lang):
+def _bare_completions(view, prefix, lang, db_path):
     if not prefix:
         return None
-    rows = core.bare_names(_db_path(), lang, _source(view), prefix)
+    rows = core.bare_names(db_path, lang, _source(view), prefix)
     if not rows:
         return None
     items = []
@@ -301,12 +559,101 @@ def _bare_completions(view, prefix, lang):
     return sublime.CompletionList(items, _BARE_FLAGS)
 
 
+def _index_completions(view, point, prefix, lang):
+    db_path = _db_path(view, lang)
+    return (
+        _markup_completions(view, point, lang, db_path)
+        or _import_completions(view, point, lang, db_path)
+        or _member_completions(view, point, prefix, lang, db_path)
+        or _bare_completions(view, prefix, lang, db_path)
+    )
+
+
+# ---- hover ------------------------------------------------------------------
+
+def _popup(view, point, title, markdown):
+    if not view.is_valid():
+        return
+    head = "<b>%s</b><br><br>" % _escape(title) if title else ""
+    view.show_popup(
+        '<body style="font-size: 0.85em">%s%s</body>' % (head, core.markdown_html(markdown)),
+        flags=sublime.HIDE_ON_MOUSE_MOVE_AWAY,
+        location=point,
+        max_width=480,
+        max_height=320,
+        on_navigate=_open_link,
+    )
+
+
+def _index_hover(view, point, lang):
+    word_region = view.word(point)
+    word = view.substr(word_region)
+    if not word or not (word[0].isalpha() or word[0] == "_"):
+        return
+    before = view.substr(sublime.Region(max(0, word_region.a - 300), word_region.a))
+    db_path = _db_path(view, lang)
+    source = _source(view)
+    title = ""
+    doc = ""
+    left, op = core.member_op(before.rstrip())
+    if left is not None:
+        owner = core.member_owner(db_path, lang, source, left)
+        if owner:
+            doc = core.symbol_doc(db_path, lang, owner, word) or core.module_doc(
+                db_path, lang, owner + op + word
+            )
+            title = owner + op + word
+    else:
+        owner = core.resolve_owner(db_path, lang, source, word)
+        if owner:
+            doc = core.module_doc(db_path, lang, owner) or core.symbol_doc(
+                db_path, lang, owner, word
+            )
+            title = owner
+        if not doc:
+            doc = core.module_doc(db_path, lang, word)
+            title = word
+    if doc:
+        _popup(view, point, title, doc)
+
+
+def _warm(view):
+    """Index the venv and start the server early, so the first completion
+    does not wait for the server to load the project."""
+    lang = _lang(view, 0)
+    if not lang:
+        return
+    if lang == "python":
+        _ensure_python_index(view)
+    client = _client(view, lang)
+    if client:
+        _sync(client, view, lang)
+
+
 class IntellektListener(sublime_plugin.EventListener):
     def on_activated(self, view):
         self._ensure_triggers(view)
 
+    def on_activated_async(self, view):
+        _warm(view)
+
     def on_load(self, view):
         self._ensure_triggers(view)
+
+    def on_close(self, view):
+        path = view.file_name()
+        if path:
+            for client in list(_CLIENTS.values()):
+                client.close(path)
+
+    def on_post_save_async(self, view):
+        path = view.file_name()
+        if path:
+            for client in list(_CLIENTS.values()):
+                client.saved(path)
+
+    def on_pre_close_window(self, window):
+        _stop_clients(window.id())
 
     def _ensure_triggers(self, view):
         current = view.settings().get("auto_complete_triggers") or []
@@ -332,16 +679,10 @@ class IntellektListener(sublime_plugin.EventListener):
         lang = _lang(view, point)
         if not lang:
             return None
-        markup = _markup_completions(view, point, lang)
-        if markup:
-            return markup
-        imported = _import_completions(view, point, lang)
-        if imported:
-            return imported
-        members = _member_completions(view, point, prefix, lang)
-        if members:
-            return members
-        return _bare_completions(view, prefix, lang)
+        client = _client(view, lang)
+        if client:
+            return _lsp_completions(view, point, prefix, lang, client)
+        return _index_completions(view, point, prefix, lang)
 
     def on_hover(self, view, point, zone):
         if zone != sublime.HOVER_TEXT:
@@ -351,53 +692,65 @@ class IntellektListener(sublime_plugin.EventListener):
         lang = _lang(view, point)
         if not lang:
             return
-        word_region = view.word(point)
-        word = view.substr(word_region)
-        if not word or not (word[0].isalpha() or word[0] == "_"):
+        client = _client(view, lang)
+        if not client:
+            _index_hover(view, point, lang)
             return
-        before = view.substr(sublime.Region(max(0, word_region.a - 300), word_region.a))
-        db_path = _db_path()
-        source = _source(view)
-        title = ""
-        doc = ""
-        stripped = before.rstrip()
-        left, op = core.member_op(stripped)
-        if left is not None:
-            owner = core.member_owner(db_path, lang, source, left)
-            if owner:
-                doc = core.symbol_doc(db_path, lang, owner, word) or core.module_doc(
-                    db_path, lang, owner + op + word
-                )
-                title = owner + op + word
-        else:
-            owner = core.resolve_owner(db_path, lang, source, word)
-            if owner:
-                doc = core.module_doc(db_path, lang, owner) or core.symbol_doc(
-                    db_path, lang, owner, word
-                )
-                title = owner
-            if not doc:
-                doc = core.module_doc(db_path, lang, word)
-                title = word
-        if not doc:
-            return
-        view.show_popup(
-            '<body style="font-size: 0.85em"><b>%s</b><br><br>%s</body>'
-            % (_escape(title), core.markdown_html(doc)),
-            flags=sublime.HIDE_ON_MOUSE_MOVE_AWAY,
-            location=point,
-            max_width=480,
-            max_height=320,
-            on_navigate=_open_link,
-        )
+
+        def on_reply(reply, error):
+            text = "" if error else lsp.hover_text(reply)
+            if text:
+                sublime.set_timeout(lambda: _popup(view, point, "", text), 0)
+            else:
+                sublime.set_timeout(lambda: _index_hover(view, point, lang), 0)
+
+        client.request("textDocument/hover", {
+            "textDocument": {"uri": _sync(client, view, lang)},
+            "position": _position(view, point),
+        }, on_reply)
+
+
+def _forget():
+    _COMMANDS.clear()
+    _VENVS.clear()
+    _PY_SEEN.clear()
+    lsp._verified.clear()
 
 
 class IntellektRebuildIndexCommand(sublime_plugin.ApplicationCommand):
     def run(self):
-        sublime.set_timeout_async(lambda: ensure_indexes(True), 0)
+        _forget()
+        _spawn(lambda: ensure_indexes(True))
+
+
+class IntellektRestartServersCommand(sublime_plugin.ApplicationCommand):
+    def run(self):
+        _stop_clients()
+        _forget()
+        view = sublime.active_window().active_view()
+        if view:
+            sublime.set_timeout_async(lambda: _warm(view), 0)
 
 
 class IntellektIndexStatusCommand(sublime_plugin.WindowCommand):
     def run(self):
-        text = core.status_text(_db_path(), _detected())
-        sublime.message_dialog(text)
+        view = self.window.active_view()
+        detected = _detected(view)
+        exe = _python_exe(view)
+        others = tuple(lang for lang in core.LANGS if lang != "python")
+        lines = [
+            core.status_text(_python_db(exe), detected, ("python",))
+            + "  [%s]" % (exe or "no interpreter"),
+            core.status_text(_db_path(), detected, others),
+            "",
+            "Language servers:",
+        ]
+        running = {key[2][0] for key, client in _CLIENTS.items() if not client.dead}
+        for lang in lsp.SERVERS:
+            spec = _server_spec(lang, exe if lang == "python" else "")
+            if not spec:
+                lines.append("%s: none found (index only)" % lang)
+                continue
+            state = "running" if spec[0][0] in running else "idle"
+            lines.append("%s: %s (%s)" % (lang, spec[0][0], state))
+        sublime.message_dialog("\n".join(lines))

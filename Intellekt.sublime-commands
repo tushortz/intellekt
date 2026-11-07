@@ -6,5 +6,9 @@
     {
         "caption": "Intellekt: Index Status",
         "command": "intellekt_index_status"
+    },
+    {
+        "caption": "Intellekt: Restart Language Servers",
+        "command": "intellekt_restart_servers"
     }
 ]

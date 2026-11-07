@@ -1,4 +1,6 @@
 {
+    // Leave a path empty to auto-detect it.
+    // python_executable overrides virtual environment detection.
     "python_executable": "",
     "ruby_executable": "",
     "java_home": "",
@@ -11,5 +13,15 @@
     "rustc_executable": "",
     "cxx_compiler": "",
     "perl_executable": "",
-    "matlab_executable": ""
+    "matlab_executable": "",
+
+    // Use an installed language server when one is found. The index is
+    // the fallback.
+    "lsp_enabled": true,
+    // How long to wait for a server before showing index completions.
+    "lsp_completion_timeout_ms": 1500,
+    // Per language: a command list, false to disable, or
+    // {"command": [...], "settings": {...}, "initialization_options": {...}}.
+    // Example: {"python": ["pylsp"], "cpp": false}
+    "lsp_servers": {}
 }
