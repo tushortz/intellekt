@@ -1,18 +1,19 @@
 """Scan JDK ``src.zip`` for public types, methods, and fields.
 
-NOTE: this is a line-oriented scan, not a Java parser. It misses unusual
-formatting, most annotations, and generated sources. Methods written inside
-anonymous classes are attributed to the enclosing type. Interface constants
-that omit ``public`` are skipped. The upgrade path is ``javap`` over the
-JDK's ``jmods`` if this scan drops members that matter.
+NOTE: a line scan, not a Java parser: misses unusual formatting, most
+annotations, generated sources; anonymous-class methods go to the enclosing
+type; interface constants without ``public`` are skipped. Upgrade path:
+``javap`` over the JDK's ``jmods``.
 
-NOTE: each zip stops after ``MAX_FILES`` compilation units, and directories
-named ``test``, ``tests``, or ``testing`` are skipped. A normal JDK is under
-the cap. The upgrade path is raising ``MAX_FILES``.
+NOTE: each zip stops after ``MAX_FILES`` units and test dirs are skipped (a
+normal JDK is under the cap). Upgrade path: raise ``MAX_FILES``.
 """
+
+from __future__ import annotations
 
 import re
 import zipfile
+from typing import Any, Iterator, Optional
 
 MAX_FILES = 20000
 _SKIP_DIRS = {"test", "tests", "testing"}
@@ -53,7 +54,7 @@ _NOT_NAMES = {
 }
 
 
-def _clean_javadoc(raw):
+def _clean_javadoc(raw: str) -> str:
     if raw.startswith("/**"):
         raw = raw[3:]
     if raw.endswith("*/"):
@@ -69,7 +70,7 @@ def _clean_javadoc(raw):
     return text
 
 
-def _skip_string(src, i, quote):
+def _skip_string(src: str, i: int, quote: str) -> int:
     n = len(src)
     i += 1
     while i < n:
@@ -84,10 +85,10 @@ def _skip_string(src, i, quote):
     return n
 
 
-def _prepare(src):
-    """Blank strings and non-doc comments. Keep indexes aligned with ``src``.
+def _prepare(src: str) -> tuple[str, list[tuple[int, str]]]:
+    """Blank strings and non-doc comments, keeping indexes aligned with ``src``.
 
-    Javadoc text is returned as ``(end_index, cleaned)`` pairs.
+    Returns ``(masked, docs)``; docs are ``(end_index, cleaned javadoc)`` pairs.
     """
     out = []
     docs = []
@@ -133,7 +134,7 @@ def _prepare(src):
     return "".join(out), docs
 
 
-def _doc_before(docs, pos, floor):
+def _doc_before(docs: list[tuple[int, str]], pos: int, floor: int) -> str:
     found = ""
     for end, text in docs:
         if end > pos:
@@ -143,7 +144,7 @@ def _doc_before(docs, pos, floor):
     return found
 
 
-def _at_keyword(src, i, word):
+def _at_keyword(src: str, i: int, word: str) -> bool:
     if not src.startswith(word, i):
         return False
     after = i + len(word)
@@ -152,8 +153,8 @@ def _at_keyword(src, i, word):
     return True
 
 
-def _read_stmt(masked, i):
-    """Read up to ``;`` or the ``{`` that opens a body. Return end index at ``{`` or after ``;``."""
+def _read_stmt(masked: str, i: int) -> tuple[str, int]:
+    """Return ``(stmt, end)`` up to the body ``{`` (end at it) or ``;`` (end after it)."""
     j = i
     n = len(masked)
     parens = 0
@@ -171,7 +172,7 @@ def _read_stmt(masked, i):
     return masked[i:], n
 
 
-def _split_args(args):
+def _split_args(args: str) -> list[str]:
     parts = []
     buf = []
     depth = 0
@@ -191,7 +192,7 @@ def _split_args(args):
     return [part for part in parts if part and part != "void"]
 
 
-def _snippet(name, args):
+def _snippet(name: str, args: str) -> str:
     bits = []
     for index, part in enumerate(_split_args(args), 1):
         safe = part.replace("$", "").replace("{", "").replace("}", "")
@@ -206,15 +207,17 @@ _PRIMITIVES = {
 }
 
 
-def _type_name(raw, imports):
-    """Class name for a declared type. Arrays and primitives have no members."""
+def _type_name(raw: Optional[str], imports: dict[str, str]) -> str:
+    """Class name for a declared type; ``""`` for arrays and primitives."""
     name = re.sub(r"<.*", "", raw or "").strip()
     if not name or raw.rstrip().endswith("]") or name in _PRIMITIVES:
         return ""
     return imports.get(name, name)
 
 
-def _parse_member(stmt, kind, imports=None):
+def _parse_member(
+    stmt: str, kind: str, imports: Optional[dict[str, str]] = None
+) -> Optional[dict[str, Any]]:
     imports = imports or {}
     compact = re.sub(r"\s+", " ", stmt).strip()
     is_iface = kind == "interface"
@@ -254,7 +257,7 @@ def _parse_member(stmt, kind, imports=None):
     }
 
 
-def scan_source(text):
+def scan_source(text: str) -> list[dict[str, Any]]:
     """Return module and symbol records for one compilation unit."""
     masked, docs = _prepare(text)
     package = ""
@@ -354,8 +357,8 @@ def scan_source(text):
     return out
 
 
-def scan_zip(path, limit=MAX_FILES):
-    """Yield records from a source zip. Stops after ``limit`` ``.java`` files."""
+def scan_zip(path: str, limit: int = MAX_FILES) -> Iterator[dict[str, Any]]:
+    """Yield records from a source zip, stopping after ``limit`` ``.java`` files."""
     seen = 0
     with zipfile.ZipFile(path) as archive:
         for info in archive.infolist():

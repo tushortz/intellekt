@@ -1,13 +1,13 @@
-"""Scan installed Perl modules.
-
-``package`` and ``sub`` lines. POD is skipped, so a ``sub`` inside ``=pod``
-is not a completion.
+"""Scan installed Perl modules for ``package`` and ``sub`` lines (POD skipped).
 
 NOTE: this is a line scan. A sub built by a string eval is missed.
 Upgrade path: ``PPI``.
 """
 
+from __future__ import annotations
+
 import re
+from typing import Any, Iterable, Iterator, Optional
 
 from . import merge_modules, read_text, walk_files
 
@@ -24,7 +24,7 @@ _BUILTINS = (
 )
 
 
-def _snippet(name, args):
+def _snippet(name: str, args: Optional[str]) -> str:
     labels = []
     for part in (args or "").strip()[1:-1].split(","):
         part = part.strip().lstrip("$%@")
@@ -36,7 +36,7 @@ def _snippet(name, args):
     return "%s(%s)" % (name, ", ".join(bits))
 
 
-def scan_source(text, fallback=""):
+def scan_source(text: str, fallback: str = "") -> Iterator[dict[str, Any]]:
     """Yield records for one ``.pm`` file."""
     package = fallback
     seen = set()
@@ -73,8 +73,8 @@ def scan_source(text, fallback=""):
         }
 
 
-def scan_roots(roots):
-    def records():
+def scan_roots(roots: Iterable[str]) -> Iterator[dict[str, Any]]:
+    def records() -> Iterator[dict[str, Any]]:
         for name in _BUILTINS:
             yield {
                 "t": "s", "owner": "perl", "name": name, "kind": "function",

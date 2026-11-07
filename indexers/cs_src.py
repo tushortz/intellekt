@@ -1,19 +1,18 @@
-"""Scan .NET XML documentation files.
+"""Scan .NET XML documentation files (``T:``/``M:``/``P:``/``F:`` member ids).
 
-``T:`` is a type, ``M:`` a method, ``P:`` a property, ``F:`` a field.
-``System.String.Substring(System.Int32)`` becomes owner ``System.String``,
-name ``Substring``. Generic arity markers (``List`1``) are removed.
-
-NOTE: NuGet packages under ``~/.nuget/packages`` stop after ``MAX_FILES``
-XML files. Project ``bin`` folders are not read. Upgrade path: the
-targeting pack's ref assemblies via System.Reflection.Metadata.
+NOTE: the NuGet cache stops after ``MAX_FILES`` XML files and project ``bin``
+folders are not read. Upgrade path: the targeting pack's ref assemblies via
+System.Reflection.Metadata.
 
 NOTE: ``System`` is treated as in scope by the resolver, which is wrong for
 projects that disable implicit usings.
 """
 
+from __future__ import annotations
+
 import re
 import xml.etree.ElementTree as ET
+from typing import Any, Iterator, Optional, Sequence
 
 from . import merge_modules, read_text, walk_files
 
@@ -24,7 +23,7 @@ _NUGET_SKIP = {
 }
 
 
-def _summary(member):
+def _summary(member: ET.Element) -> str:
     for child in list(member):
         if not str(child.tag).endswith("summary"):
             continue
@@ -33,7 +32,7 @@ def _summary(member):
     return ""
 
 
-def _snippet(name, params):
+def _snippet(name: str, params: Optional[str]) -> str:
     labels = []
     for part in (params or "").split(","):
         part = re.sub(r"`\d+", "", part).strip()
@@ -46,7 +45,7 @@ def _snippet(name, params):
     return "%s(%s)" % (name, ", ".join(bits))
 
 
-def _split_id(mid):
+def _split_id(mid: str) -> Optional[tuple[str, str, str, str]]:
     if len(mid) < 3 or mid[1] != ":":
         return None
     kind, rest = mid[0], mid[2:]
@@ -66,9 +65,9 @@ def _split_id(mid):
     return kind, owner, name, params
 
 
-def scan_xml(text):
+def scan_xml(text: str) -> list[dict[str, Any]]:
     """Return records for one XML documentation document."""
-    def generate():
+    def generate() -> Iterator[dict[str, Any]]:
         try:
             root = ET.fromstring(text)
         except ET.ParseError:
@@ -126,13 +125,12 @@ def scan_xml(text):
     return list(merge_modules(generate()))
 
 
-def scan_roots(roots, limit=MAX_FILES):
-    """Yield records from documentation XML under ``roots``.
+def scan_roots(roots: Sequence[str], limit: int = MAX_FILES) -> Iterator[dict[str, Any]]:
+    """Yield records from doc XML under ``roots`` (targeting pack first, then NuGet cache).
 
-    The first root is the targeting pack. Later roots (the NuGet cache)
-    share whatever file budget is left.
+    Later roots share whatever file budget is left.
     """
-    def records():
+    def records() -> Iterator[dict[str, Any]]:
         seen = 0
         for index, root in enumerate(roots):
             skip = _NUGET_SKIP if index else {"test", "tests", "testing"}

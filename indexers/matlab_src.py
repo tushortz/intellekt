@@ -1,13 +1,13 @@
-"""Scan GNU Octave or MATLAB ``.m`` files.
-
-The first function in a script file is the public one. A ``classdef`` file
-records that class and treats every function in the file as a method.
+"""Scan GNU Octave/MATLAB ``.m`` files: a script's first function, or a classdef and its methods.
 
 NOTE: local functions after a classdef are recorded as methods. Nested
 ``end`` is not matched. Upgrade path: a block matcher.
 """
 
+from __future__ import annotations
+
 import re
+from typing import Any, Iterable, Iterator, Optional
 
 from . import merge_modules, read_text, walk_files
 
@@ -20,7 +20,7 @@ _FN_RE = re.compile(
 )
 
 
-def _snippet(name, args):
+def _snippet(name: str, args: Optional[str]) -> str:
     labels = []
     for part in (args or "").strip()[1:-1].split(","):
         part = part.strip()
@@ -32,7 +32,7 @@ def _snippet(name, args):
     return "%s(%s)" % (name, ", ".join(bits))
 
 
-def scan_source(text):
+def scan_source(text: str) -> Iterator[dict[str, Any]]:
     """Yield records for one ``.m`` file."""
     text = re.sub(r"%.*?$", "", text, flags=re.M)
     found = _CLASS_RE.search(text)
@@ -59,8 +59,8 @@ def scan_source(text):
         }
 
 
-def scan_roots(roots):
-    def records():
+def scan_roots(roots: Iterable[str]) -> Iterator[dict[str, Any]]:
+    def records() -> Iterator[dict[str, Any]]:
         for path in walk_files(roots, (".m",), MAX_FILES, _SKIP):
             text = read_text(path)
             if text:

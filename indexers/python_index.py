@@ -1,25 +1,19 @@
-"""Index a Python install.
+"""Index a Python install (run with the user's interpreter):
 
-Run with the user's interpreter:
+    python3 python_index.py --out symbols.jsonl [--lib ./some/tree]
 
-    python3 python_index.py --out symbols.jsonl
-    python3 python_index.py --lib ./some/tree --out symbols.jsonl
+``.py`` files via ``ast`` (re-exports copied onto packages); C modules and
+site packages via ``inspect``. ``--lib`` indexes only that tree.
 
-``.py`` files are parsed with ``ast``. Names imported in ``__init__`` or in a
-``TYPE_CHECKING`` block are copied onto the package, which is how external
-packages publish names such as ``BaseModel``. C stdlib modules and top-level
-site packages are imported with ``inspect`` so compiled libraries complete.
-``--lib`` skips the real stdlib, the allowlist, and those site imports.
+NOTE: each site-package import is capped at ``SITE_IMPORT_SECONDS``; slow or
+failing imports are skipped. Upgrade path: import only packages the edited
+file names.
 
-NOTE: each site-package import is limited to ``SITE_IMPORT_SECONDS``. A
-package that exceeds it, or whose import raises, is skipped. Side effects
-stay in this process, not in Sublime. Upgrade path: import only the packages
-named by the file being edited.
-
-NOTE: the walk stops after ``MAX_FILES`` files per tree (stdlib and
-site-packages are counted separately) and skips directories named ``test``,
-``tests``, or ``testing``. Upgrade path: index one distribution at a time.
+NOTE: the walk stops after ``MAX_FILES`` per tree and skips test dirs.
+Upgrade path: index one distribution at a time.
 """
+
+from __future__ import annotations
 
 import ast
 import importlib
@@ -28,6 +22,7 @@ import json
 import os
 import signal
 import sys
+from typing import Any, Optional
 
 MAX_FILES = 8000
 SITE_IMPORT_SECONDS = 8
@@ -58,17 +53,17 @@ C_MODULES = (
 )
 
 
-def clip(text):
+def clip(text: Optional[str]) -> str:
     if not text:
         return ""
     return text.replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
-def snippet_from_args(name, args):
+def snippet_from_args(name: str, args: ast.arguments) -> str:
     parts = []
     index = 1
 
-    def add(label):
+    def add(label: str) -> None:
         nonlocal index
         parts.append("${%s:%s}" % (index, label))
         index += 1
@@ -87,7 +82,7 @@ def snippet_from_args(name, args):
     return "%s(%s)" % (name, ", ".join(parts))
 
 
-def snippet_from_signature(name, obj):
+def snippet_from_signature(name: str, obj: Any) -> str:
     try:
         sig = inspect.signature(obj)
     except (TypeError, ValueError):
@@ -108,7 +103,7 @@ def snippet_from_signature(name, obj):
     return "%s(%s)" % (name, ", ".join(parts))
 
 
-def _annotation_text(node):
+def _annotation_text(node: Optional[ast.expr]) -> str:
     """Dotted name from a return annotation. ``X | None`` keeps ``X``."""
     if node is None:
         return ""
@@ -130,7 +125,7 @@ def _annotation_text(node):
     return ""
 
 
-def _decorator_name(dec):
+def _decorator_name(dec: ast.expr) -> str:
     target = dec.func if isinstance(dec, ast.Call) else dec
     if isinstance(target, ast.Name):
         return target.id
@@ -139,7 +134,7 @@ def _decorator_name(dec):
     return ""
 
 
-def module_name(root, path):
+def module_name(root: str, path: str) -> tuple[Optional[str], bool]:
     """Return ``(dotted name, is_package)``. ``__init__.py`` is the package."""
     rel = os.path.splitext(os.path.relpath(path, root))[0]
     parts = rel.split(os.sep)
@@ -151,8 +146,8 @@ def module_name(root, path):
     return ".".join(parts), is_package
 
 
-def owning_root(path, roots):
-    """Longest root wins, so a site-packages file is not named ``site-packages.pkg``."""
+def owning_root(path: str, roots: list[str]) -> Optional[str]:
+    """Longest matching root, so a site-packages file is not ``site-packages.pkg``."""
     matches = [
         item for item in roots
         if path == item or path.startswith(item + os.sep)
@@ -162,7 +157,7 @@ def owning_root(path, roots):
     return max(matches, key=len)
 
 
-def collect_files(root, acc, limit):
+def collect_files(root: str, acc: list[str], limit: int) -> None:
     if len(acc) >= limit or not os.path.isdir(root):
         return
     for dirpath, dirnames, filenames in os.walk(root):
@@ -179,13 +174,13 @@ def collect_files(root, acc, limit):
 
 
 class _Visitor(ast.NodeVisitor):
-    def __init__(self, module, out, seen_modules):
+    def __init__(self, module: str, out: list[dict[str, Any]], seen_modules: set[str]) -> None:
         self.owner = module
         self.out = out
         self.seen_modules = seen_modules
         self.in_class = False
 
-    def visit_ClassDef(self, node):
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
         fq = self.owner + "." + node.name
         doc = clip(ast.get_docstring(node) or "")
         self.out.append({
@@ -202,13 +197,13 @@ class _Visitor(ast.NodeVisitor):
         self.owner = previous
         self.in_class = was_class
 
-    def visit_FunctionDef(self, node):
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._function(node)
 
-    def visit_AsyncFunctionDef(self, node):
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         self._function(node)
 
-    def _function(self, node):
+    def _function(self, node: Any) -> None:
         doc = clip(ast.get_docstring(node) or "")
         names = [_decorator_name(dec) for dec in node.decorator_list]
         is_property = "property" in names
@@ -229,7 +224,7 @@ class _Visitor(ast.NodeVisitor):
         })
 
 
-def _const_list(node):
+def _const_list(node: Optional[ast.expr]) -> Optional[list[str]]:
     if not isinstance(node, (ast.List, ast.Tuple)):
         return None
     names = []
@@ -241,13 +236,13 @@ def _const_list(node):
     return names
 
 
-def _is_type_checking(test):
+def _is_type_checking(test: ast.expr) -> bool:
     if isinstance(test, ast.Name) and test.id == "TYPE_CHECKING":
         return True
     return isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
 
 
-def _relative_module(module, is_package, level, imported):
+def _relative_module(module: str, is_package: bool, level: int, imported: Optional[str]) -> str:
     if level == 0:
         return imported or ""
     base = module.split(".") if is_package else module.split(".")[:-1]
@@ -261,12 +256,12 @@ def _relative_module(module, is_package, level, imported):
     return ".".join(part for part in base if part)
 
 
-def _collect_exports(tree, module, is_package):
-    """Public re-exports. ``all`` is None when the file has no ``__all__``."""
+def _collect_exports(tree: ast.Module, module: str, is_package: bool) -> dict[str, Any]:
+    """Return ``{"all": set|None, "bindings": [(local, module, name)]}``."""
     found = {"all": None, "bindings": []}
     top = module.split(".")[0]
 
-    def handle(stmt):
+    def handle(stmt: ast.stmt) -> None:
         if isinstance(stmt, ast.Assign):
             for target in stmt.targets:
                 if isinstance(target, ast.Name) and target.id == "__all__":
@@ -289,7 +284,13 @@ def _collect_exports(tree, module, is_package):
     return found
 
 
-def index_file(root, path, out, seen_modules, exports):
+def index_file(
+    root: str,
+    path: str,
+    out: list[dict[str, Any]],
+    seen_modules: set[str],
+    exports: dict[str, dict[str, Any]],
+) -> None:
     module, is_package = module_name(root, path)
     if not module:
         return
@@ -315,7 +316,7 @@ def index_file(root, path, out, seen_modules, exports):
     exports[module] = _collect_exports(tree, module, is_package)
 
 
-def _alias_signature(alias, source):
+def _alias_signature(alias: str, source: dict[str, Any]) -> str:
     sig = source.get("signature") or source["name"]
     src = source["name"]
     if sig.startswith(src):
@@ -323,16 +324,12 @@ def _alias_signature(alias, source):
     return alias
 
 
-def _bind_aliases(module, tree, out):
-    """Copy ``name = obj.method`` onto the module.
+def _bind_aliases(module: str, tree: ast.Module, out: list[dict[str, Any]]) -> None:
+    """Copy ``name = obj.method`` onto the module (e.g. ``random.randint``).
 
-    ``random.randint`` is not a def. It is ``_inst.randint``. The method
-    already indexed on the class is copied so ``from random import randint``
-    can see it.
-
-    NOTE: the first same-named function in the file supplies the signature.
-    A module that binds the name to a different callable is not told apart.
-    Upgrade path: follow the assignment with a type checker.
+    NOTE: the first same-named function in the file supplies the signature, so
+    a binding to a different callable is not told apart. Upgrade path: follow
+    the assignment with a type checker.
     """
     defined = {
         rec["name"] for rec in out
@@ -377,8 +374,8 @@ def _bind_aliases(module, tree, out):
             defined.add(name)
 
 
-def link_submodules(out):
-    """A child module is a member of its parent, so ``pkg.sub`` completes."""
+def link_submodules(out: list[dict[str, Any]]) -> None:
+    """Add each child module as a member of its parent so ``pkg.sub`` completes."""
     modules = {}
     for rec in out:
         if rec.get("t") == "m":
@@ -396,11 +393,11 @@ def link_submodules(out):
             have.add((parent, child))
 
 
-def apply_reexports(out, exports):
+def apply_reexports(out: list[dict[str, Any]], exports: dict[str, dict[str, Any]]) -> None:
     """Copy imported names onto the package that re-exports them.
 
-    NOTE: four passes, so a re-export of a re-export is followed that far.
-    Deeper chains are dropped. Upgrade path: keep passing until stable.
+    NOTE: four passes; deeper re-export chains are dropped. Upgrade path: keep
+    passing until stable.
     """
     by_owner = {}
     defined = set()
@@ -412,7 +409,7 @@ def apply_reexports(out, exports):
         elif rec.get("t") == "m":
             modules.add(rec["name"])
 
-    def copy_methods(src_owner, dst_owner):
+    def copy_methods(src_owner: str, dst_owner: str) -> None:
         if src_owner == dst_owner:
             return
         for rec in list(by_owner.get(src_owner, [])):
@@ -427,7 +424,7 @@ def apply_reexports(out, exports):
             out.append({"t": "m", "name": dst_owner, "doc": ""})
             modules.add(dst_owner)
 
-    def copy_symbol(src_owner, src_name, dst_owner, dst_name):
+    def copy_symbol(src_owner: str, src_name: str, dst_owner: str, dst_name: str) -> bool:
         if not dst_name or (dst_owner, dst_name) in defined:
             return False
         for rec in by_owner.get(src_owner, []):
@@ -478,25 +475,22 @@ def apply_reexports(out, exports):
                             copy_symbol(target_mod, rec["name"], module, rec["name"])
 
 
-def _defined_on(cls, name):
+def _defined_on(cls: type, name: str) -> bool:
     for base in cls.__mro__:
         if name in base.__dict__:
             return base is cls
     return False
 
 
-def _inherited_data(cls, name):
-    """True for a property defined on ``cls`` or a base other than ``object``.
-
-    ``datetime.year`` lives on ``date``. It still has to complete on ``datetime``.
-    """
+def _inherited_data(cls: type, name: str) -> bool:
+    """True if ``name`` is defined on ``cls`` or a base other than ``object``."""
     for base in cls.__mro__:
         if name in base.__dict__:
             return base is not object
     return False
 
 
-def _member_kind(obj):
+def _member_kind(obj: Any) -> str:
     if isinstance(obj, property) or type(obj).__name__ in (
         "getset_descriptor", "member_descriptor",
     ):
@@ -511,19 +505,18 @@ def _member_kind(obj):
     return ""
 
 
-def _is_classmethod(obj):
+def _is_classmethod(obj: Any) -> bool:
     if isinstance(obj, classmethod):
         return True
     text = getattr(obj, "__text_signature__", "") or ""
     return text.startswith("($type,") or text.startswith("($cls,")
 
 
-def _return_type(obj, owner):
-    """Annotated return type, or the class itself for a classmethod.
+def _return_type(obj: Any, owner: str) -> str:
+    """Annotated return type, or ``owner`` for a classmethod.
 
-    NOTE: ``datetime.now`` has no annotation; its text signature starts with
-    ``$type``, so the return type is ``datetime``. A classmethod that returns
-    a different type needs an annotation.
+    NOTE: an unannotated classmethod (``datetime.now``) is assumed to return
+    its class; one returning another type needs an annotation.
     """
     try:
         ann = inspect.signature(obj).return_annotation
@@ -547,7 +540,16 @@ def _return_type(obj, owner):
     return ""
 
 
-def _add_symbol(out, defined, owner, name, kind, signature, doc, returns=""):
+def _add_symbol(
+    out: list[dict[str, Any]],
+    defined: set[tuple[str, str]],
+    owner: str,
+    name: str,
+    kind: str,
+    signature: str,
+    doc: str,
+    returns: str = "",
+) -> bool:
     if (owner, name) in defined:
         return False
     out.append({
@@ -558,7 +560,13 @@ def _add_symbol(out, defined, owner, name, kind, signature, doc, returns=""):
     return True
 
 
-def index_c_module(name, out, seen_modules, defined, depth=0):
+def index_c_module(
+    name: str,
+    out: list[dict[str, Any]],
+    seen_modules: set[str],
+    defined: set[tuple[str, str]],
+    depth: int = 0,
+) -> None:
     try:
         mod = importlib.import_module(name)
     except Exception:
@@ -610,7 +618,7 @@ def index_c_module(name, out, seen_modules, defined, depth=0):
             )
 
 
-def site_import_names(roots):
+def site_import_names(roots: list[str]) -> list[str]:
     names = []
     seen = set()
     for root in roots:
@@ -646,12 +654,14 @@ def site_import_names(roots):
     return names
 
 
-def import_site_package(name, out, seen_modules, defined):
+def import_site_package(
+    name: str, out: list[dict[str, Any]], seen_modules: set[str], defined: set[tuple[str, str]]
+) -> None:
     if not hasattr(signal, "SIGALRM"):
         index_c_module(name, out, seen_modules, defined)
         return
 
-    def handler(signum, frame):
+    def handler(signum: int, frame: Any) -> None:
         raise TimeoutError(name)
 
     previous = signal.signal(signal.SIGALRM, handler)
@@ -665,7 +675,7 @@ def import_site_package(name, out, seen_modules, defined):
         signal.signal(signal.SIGALRM, previous)
 
 
-def stdlib_roots():
+def stdlib_roots() -> list[str]:
     import sysconfig
     roots = []
     for key in ("stdlib", "platstdlib"):
@@ -675,7 +685,7 @@ def stdlib_roots():
     return roots
 
 
-def site_roots():
+def site_roots() -> list[str]:
     import site
     roots = []
     try:
@@ -690,14 +700,20 @@ def site_roots():
     return roots
 
 
-def _index_tree(files, roots, out, seen, exports):
+def _index_tree(
+    files: list[str],
+    roots: list[str],
+    out: list[dict[str, Any]],
+    seen: set[str],
+    exports: dict[str, dict[str, Any]],
+) -> None:
     for path in files:
         root = owning_root(path, roots)
         if root:
             index_file(root, path, out, seen, exports)
 
 
-def build(lib=None):
+def build(lib: Optional[str] = None) -> list[dict[str, Any]]:
     out = []
     seen = set()
     exports = {}
@@ -730,7 +746,7 @@ def build(lib=None):
     return out
 
 
-def main(argv):
+def main(argv: list[str]) -> int:
     out_path = None
     lib = None
     args = argv[1:]

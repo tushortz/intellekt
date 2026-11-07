@@ -1,18 +1,24 @@
-"""Indexers.
-
-Java, TypeScript, C#, Go, Rust, C++, Perl, MATLAB, CSS, and HTML run
-inside the plugin host. Python, Ruby, JavaScript, and PHP are scripts
-executed by the installed interpreter.
+"""Indexers. Most run in the plugin host; Python, Ruby, JavaScript and PHP
+are scripts run by the installed interpreter.
 """
 
+from __future__ import annotations
+
 import os
+from typing import Any, Iterable, Iterator, Optional
 
 # Directories that are tests or generated noise in every toolchain we walk.
 SKIP_DIRS = {"test", "tests", "testing", "testdata", "node_modules"}
 
 
-def walk_files(roots, suffixes, limit, skip_dirs=None, allow_plain=False):
-    """Yield source files under ``roots`` until ``limit`` files have been seen.
+def walk_files(
+    roots: Iterable[str],
+    suffixes: tuple[str, ...],
+    limit: int,
+    skip_dirs: Optional[set[str]] = None,
+    allow_plain: bool = False,
+) -> Iterator[str]:
+    """Yield source files under ``roots``, at most ``limit``.
 
     NOTE: the walk stops after ``limit`` files, so a large module cache or
     SDK is only partly indexed. Upgrade path: index one dependency at a time.
@@ -43,10 +49,9 @@ def walk_files(roots, suffixes, limit, skip_dirs=None, allow_plain=False):
                 yield os.path.join(dirpath, filename)
 
 
-def merge_modules(records):
-    """Yield symbols immediately. Yield each module once, keeping a real doc.
+def merge_modules(records: Iterable[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+    """Yield symbols as seen, then each module once (a later empty doc never wipes a real one).
 
-    A later empty doc must not wipe the summary already seen for that name.
     NOTE: module names are held until ``records`` is exhausted. Upgrade path:
     an insert that refuses to replace a non-empty doc.
     """
@@ -65,7 +70,7 @@ def merge_modules(records):
         yield {"t": "m", "name": name, "doc": modules[name]}
 
 
-def read_text(path, limit=800_000):
+def read_text(path: str, limit: int = 800_000) -> str:
     """Return the file as text, or ``""`` if it is missing, huge, or binary."""
     try:
         size = os.path.getsize(path)

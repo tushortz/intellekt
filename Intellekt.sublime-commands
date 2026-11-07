@@ -1,14 +1,34 @@
 [
-    {
-        "caption": "Intellekt: Rebuild Index",
-        "command": "intellekt_rebuild_index"
-    },
-    {
-        "caption": "Intellekt: Index Status",
-        "command": "intellekt_index_status"
-    },
-    {
-        "caption": "Intellekt: Restart Language Servers",
-        "command": "intellekt_restart_servers"
-    }
+    {"caption": "Intellekt: Rebuild Index", "command": "intellekt_rebuild_index"},
+    {"caption": "Intellekt: Index Status", "command": "intellekt_index_status"},
+    {"caption": "Intellekt: Restart Language Servers", "command": "intellekt_restart_servers"},
+    {"caption": "Intellekt: Go to Definition", "command": "intellekt_goto", "args": {"kind": "definition"}},
+    {"caption": "Intellekt: Go to Type Definition", "command": "intellekt_goto", "args": {"kind": "type_definition"}},
+    {"caption": "Intellekt: Go to Declaration", "command": "intellekt_goto", "args": {"kind": "declaration"}},
+    {"caption": "Intellekt: Go to Implementation", "command": "intellekt_goto", "args": {"kind": "implementation"}},
+    {"caption": "Intellekt: Find References", "command": "intellekt_references"},
+    {"caption": "Intellekt: Rename Symbol", "command": "intellekt_rename"},
+    {"caption": "Intellekt: Quick Fix", "command": "intellekt_quick_fix"},
+    {"caption": "Intellekt: Organize Imports", "command": "intellekt_organize_imports"},
+    {"caption": "Intellekt: Format Document", "command": "intellekt_format", "args": {"selection": false}},
+    {"caption": "Intellekt: Format Selection", "command": "intellekt_format"},
+    {"caption": "Intellekt: Expand Selection", "command": "intellekt_expand_selection"},
+    {"caption": "Intellekt: Shrink Selection", "command": "intellekt_shrink_selection"},
+    {"caption": "Intellekt: Go to Symbol in File", "command": "intellekt_document_symbols"},
+    {"caption": "Intellekt: Go to Symbol in Project", "command": "intellekt_workspace_symbols"},
+    {"caption": "Intellekt: Call Hierarchy", "command": "intellekt_call_hierarchy"},
+    {"caption": "Intellekt: Type Hierarchy", "command": "intellekt_type_hierarchy"},
+    {"caption": "Intellekt: Fold Block Here", "command": "intellekt_fold", "args": {"which": "here"}},
+    {"caption": "Intellekt: Fold All Blocks", "command": "intellekt_fold", "args": {"which": "all"}},
+    {"caption": "Intellekt: Fold Imports", "command": "intellekt_fold", "args": {"which": "imports"}},
+    {"caption": "Intellekt: Fold Comments", "command": "intellekt_fold", "args": {"which": "comments"}},
+    {"caption": "Intellekt: Switch Between Source and Header (C/C++)", "command": "intellekt_switch_source_header"},
+    {"caption": "Intellekt: Toggle Inlay Hints", "command": "intellekt_toggle", "args": {"name": "inlay_hints"}},
+    {"caption": "Intellekt: Toggle Code Lens", "command": "intellekt_toggle", "args": {"name": "code_lens"}},
+    {"caption": "Intellekt: Toggle Document Links", "command": "intellekt_toggle", "args": {"name": "document_links"}},
+    {"caption": "Intellekt: Toggle Format on Save", "command": "intellekt_toggle", "args": {"name": "format_on_save"}},
+    {"caption": "Intellekt: Toggle Format as You Type", "command": "intellekt_toggle", "args": {"name": "format_on_type"}},
+    {"caption": "Intellekt: Toggle Semantic Highlighting", "command": "intellekt_toggle", "args": {"name": "semantic_highlighting"}},
+    {"caption": "Intellekt: Toggle Inactive Code Dimming (C/C++)", "command": "intellekt_toggle", "args": {"name": "inactive_regions"}},
+    {"caption": "Intellekt: Add Semantic Colors to Color Scheme", "command": "intellekt_add_semantic_colors"}
 ]

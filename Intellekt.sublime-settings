@@ -1,29 +1,124 @@
 {
-    // Leave a path empty to auto-detect it.
-    // python_executable overrides virtual environment detection.
-    "python_executable": "",
-    "ruby_executable": "",
-    "java_home": "",
-    "java_sources": [],
-    "node_executable": "",
-    "tsc_executable": "",
-    "dotnet_root": "",
-    "go_executable": "",
-    "php_executable": "",
-    "rustc_executable": "",
-    "cxx_compiler": "",
-    "perl_executable": "",
-    "matlab_executable": "",
+    // Everything works without changes. Set a value only to override.
+    //
+    // Each language block can hold:
+    //   program path(s): "executable" (or "java_home", "sources", "dotnet_root", "compiler")
+    //   "server": null to auto-detect, a command list such as ["pylsp"], or false to turn it off
+    //   "settings": sent to the server (its workspace configuration)
+    //   "initialization_options": sent when the server starts
+    //   any feature switch below without its "lsp_" prefix, e.g. "inlay_hints": false
 
-    // Use an installed language server when one is found. The index is
-    // the fallback.
     "lsp_enabled": true,
-    // Underline errors, warnings and notes reported by the language server.
-    "lsp_diagnostics": true,
-    // How long to wait for a server before showing index completions.
+    // How long to wait for a server before showing built-in suggestions.
     "lsp_completion_timeout_ms": 1500,
-    // Per language: a command list, false to disable, or
-    // {"command": [...], "settings": {...}, "initialization_options": {...}}.
-    // Example: {"python": ["pylsp"], "cpp": false}
-    "lsp_servers": {}
+
+    // Feature switches (defaults for every language).
+    "lsp_diagnostics": true,          // underline errors and warnings
+    "lsp_signature_help": true,       // parameter help while typing a call
+    "lsp_highlight_references": true, // outline other uses of the name under the cursor
+    "lsp_show_hints": true,           // gray squiggle for unused and deprecated code
+    "lsp_inlay_hints": true,          // faint inline types and parameter names
+    "lsp_code_lens": true,            // "Run | 3 references" links above functions
+    "lsp_document_links": true,       // underline #include paths and links; hover to open
+    "lsp_format_on_save": false,      // format the file when saving
+    "lsp_format_on_save_timeout_ms": 1500,
+    "lsp_format_on_type": false,      // server fixes after typing ";" or Enter
+    // Heavy, so off by default. Run "Intellekt: Add Semantic Colors to Color
+    // Scheme" once, then turn them on.
+    // Experimental: Sublime fills token backgrounds instead of recoloring
+    // text, so this draws colored blocks. Leave off.
+    "lsp_semantic_highlighting": false, // server-based coloring
+    "lsp_inactive_regions": false,      // dim C/C++ code left out by #if / #ifdef
+
+    "python": {
+        // Python to use. Overrides virtual environment detection.
+        "executable": "",
+        "server": null,
+        "settings": {},
+        "initialization_options": {}
+    },
+    "java": {
+        // JDK folder, and extra source zips to index.
+        "java_home": "",
+        "sources": [],
+        "server": null,
+        "settings": {},
+        "initialization_options": {}
+    },
+    "ruby": {
+        "executable": "",
+        "server": null,
+        "settings": {},
+        "initialization_options": {}
+    },
+    "javascript": {
+        // Node.js.
+        "executable": "",
+        "server": null,
+        "settings": {},
+        "initialization_options": {}
+    },
+    "typescript": {
+        // tsc.
+        "executable": "",
+        "server": null,
+        "settings": {},
+        "initialization_options": {}
+    },
+    "csharp": {
+        // .NET folder.
+        "dotnet_root": "",
+        "server": null,
+        "settings": {},
+        "initialization_options": {}
+    },
+    "go": {
+        "executable": "",
+        "server": null,
+        "settings": {},
+        "initialization_options": {}
+    },
+    "php": {
+        "executable": "",
+        "server": null,
+        "settings": {},
+        "initialization_options": {}
+    },
+    "rust": {
+        // rustc.
+        "executable": "",
+        "server": null,
+        "settings": {},
+        "initialization_options": {}
+    },
+    "cpp": {
+        // clang++ or g++.
+        "compiler": "",
+        "server": null,
+        "settings": {},
+        "initialization_options": {}
+    },
+    "css": {
+        "server": null,
+        "settings": {},
+        "initialization_options": {}
+    },
+    "html": {
+        "server": null,
+        "settings": {},
+        "initialization_options": {}
+    },
+    "perl": {
+        "executable": "",
+        "server": null,
+        "settings": {},
+        "initialization_options": {}
+    },
+    "matlab": {
+        // MATLAB or Octave.
+        "executable": "",
+        "server": null,
+        "settings": {},
+        "initialization_options": {}
+    }
 }

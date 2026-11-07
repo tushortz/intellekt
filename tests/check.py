@@ -1,15 +1,13 @@
-"""One check for the index, the Java scanner, and the external indexers.
+"""One check for the index, scanners, indexers, and LSP client. Run: ``python3 tests/check.py``."""
 
-Run from anywhere:
-
-    python3 tests/check.py
-"""
+from __future__ import annotations
 
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+from typing import Any, Callable, Optional
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -60,12 +58,14 @@ public interface Bucket {
 """
 
 
-def check(cond, message):
+def check(cond: Any, message: str) -> None:
     if not cond:
         raise SystemExit("FAIL: " + message)
 
 
-def symbols(records, name=None, owner=None):
+def symbols(
+    records: list[dict[str, Any]], name: Optional[str] = None, owner: Optional[str] = None,
+) -> list[dict[str, Any]]:
     rows = [rec for rec in records if rec.get("t") == "s"]
     if name is not None:
         rows = [rec for rec in rows if rec["name"] == name]
@@ -74,7 +74,7 @@ def symbols(records, name=None, owner=None):
     return rows
 
 
-def check_cache():
+def check_cache() -> None:
     directory = tempfile.mkdtemp(prefix="intellekt-check-")
     try:
         db_path = os.path.join(directory, "index.sqlite")
@@ -150,7 +150,7 @@ def check_cache():
         shutil.rmtree(directory)
 
 
-def check_resolve():
+def check_resolve() -> None:
     directory = tempfile.mkdtemp(prefix="intellekt-check-")
     try:
         db_path = os.path.join(directory, "index.sqlite")
@@ -394,7 +394,7 @@ def check_resolve():
         shutil.rmtree(directory)
 
 
-def check_java_scan():
+def check_java_scan() -> None:
     records = java_src.scan_source(JAVA_FIXTURE)
     modules = [rec["name"] for rec in records if rec["t"] == "m"]
     check("demo.Widget" in modules, "widget module missing: %s" % modules)
@@ -435,7 +435,7 @@ def check_java_scan():
     check(any("Append" in rec["doc"] for rec in adds), "JDK ArrayList.add lost its doc")
 
 
-def check_python_indexer():
+def check_python_indexer() -> None:
     out_path = os.path.join(tempfile.mkdtemp(prefix="intellekt-py-"), "out.jsonl")
     script = os.path.join(ROOT, "indexers", "python_index.py")
     lib = os.path.join(ROOT, "tests", "fixtures", "pylib")
@@ -492,7 +492,7 @@ def check_python_indexer():
         shutil.rmtree(directory)
 
 
-def check_datetime_properties():
+def check_datetime_properties() -> None:
     import importlib.util
     path = os.path.join(ROOT, "indexers", "python_index.py")
     spec = importlib.util.spec_from_file_location("python_index_live", path)
@@ -507,7 +507,7 @@ def check_datetime_properties():
           "datetime.now return: %s" % now)
 
 
-def check_ruby_indexer():
+def check_ruby_indexer() -> None:
     ruby = shutil.which("ruby")
     if not ruby:
         print("skip ruby indexer (ruby is not on PATH)")
@@ -607,7 +607,7 @@ int printf(const char *fmt, ...);
 """
 
 
-def check_ts_scan():
+def check_ts_scan() -> None:
     records = ts_src.scan_source(TS_FIXTURE)
     log = symbols(records, "log", "Console")
     check(log, "console.log missing: %s" % records)
@@ -621,7 +621,7 @@ def check_ts_scan():
     check(is_file, "fs.Stats.isFile missing: %s" % records)
 
 
-def check_cs_scan():
+def check_cs_scan() -> None:
     records = cs_src.scan_xml(CS_FIXTURE)
     modules = [rec["name"] for rec in records if rec["t"] == "m"]
     check("System.String" in modules, "String type missing: %s" % modules)
@@ -634,7 +634,7 @@ def check_cs_scan():
     check(symbols(records, "String", "System"), "String member of System missing")
 
 
-def check_go_scan():
+def check_go_scan() -> None:
     records = go_src.scan_source(GO_FIXTURE, "widget")
     add = symbols(records, "Add", "widget.Widget")
     check(add and "name" in add[0]["signature"], "go Add: %s" % add)
@@ -647,7 +647,7 @@ def check_go_scan():
     check(any(rec["t"] == "m" and rec["name"] == "widget.Widget" for rec in records), "go Widget module")
 
 
-def check_rust_scan():
+def check_rust_scan() -> None:
     records = rust_src.scan_source(RUST_FIXTURE, "demo")
     add = symbols(records, "add", "demo::Widget")
     check(add and "name" in add[0]["signature"] and "self" not in add[0]["signature"],
@@ -661,7 +661,7 @@ def check_rust_scan():
     check("alloc::vec::Vec" in names and "std::vec::Vec" in names, "rust std alias: %s" % names)
 
 
-def check_cpp_scan():
+def check_cpp_scan() -> None:
     records = cpp_src.scan_source(CPP_FIXTURE, "vector", False)
     push = symbols(records, "push_back", "std::vector")
     check(push and "value" in push[0]["signature"], "push_back: %s" % push)
@@ -672,6 +672,18 @@ def check_cpp_scan():
     printf = symbols(c_records, "printf", "c")
     check(printf and "fmt" in printf[0]["signature"], "c printf: %s" % printf)
     check(any(rec["t"] == "m" and rec["name"] == "stdio.h" for rec in c_records), "stdio module")
+
+    # libstdc++ style: macros, and "{" on the line after namespace and class.
+    gnu = cpp_src.scan_source(
+        "namespace std _GLIBCXX_VISIBILITY(default)\n{\n_GLIBCXX_BEGIN_NAMESPACE_VERSION\n"
+        "  template<typename _Tp>\n    class vector : protected _Vector_base<_Tp>\n    {\n"
+        "    public:\n      void\n      push_back(const value_type& __x);\n"
+        "      size_type size() const noexcept;\n    };\n"
+        "_GLIBCXX_END_NAMESPACE_VERSION\n}\n", "bits/stl_vector.h", False,
+    )
+    owners = {rec["owner"] for rec in gnu if rec.get("name") == "size"}
+    check(owners == {"std::vector"}, "libstdc++ style owners: %s" % owners)
+    check(not any(rec["t"] == "m" and rec["name"].startswith("bits/") for rec in gnu), "bits/ is not an include")
 
     found = core.detect_cpp()
     if not found:
@@ -695,7 +707,7 @@ def check_cpp_scan():
     check("std::vector" in owners, "live vector push_back owners: %s" % sorted(owners))
 
 
-def check_js_indexer():
+def check_js_indexer() -> None:
     node = shutil.which("node")
     if not node:
         print("skip javascript indexer (node is not on PATH)")
@@ -715,7 +727,7 @@ def check_js_indexer():
     check(add and "name" in add[0]["signature"], "js Widget.add: %s" % records)
 
 
-def check_php_indexer():
+def check_php_indexer() -> None:
     php = shutil.which("php")
     if not php:
         print("skip php indexer (php is not on PATH)")
@@ -737,7 +749,7 @@ def check_php_indexer():
     check(greet and "Says hello" in greet[0]["doc"], "php greet: %s" % greet)
 
 
-def check_markdown():
+def check_markdown() -> None:
     plain = core.markdown_html("Say **hello** to `name` and `x` and *world*.")
     check("<b>hello</b>" in plain and ">name</code>" in plain and ">x</code>" in plain, plain)
     check("var(--foreground) a(0.08)" in plain and "<i>world</i>" in plain, plain)
@@ -755,9 +767,13 @@ def check_markdown():
     )
     check("&nbsp;" not in pyright and "border-top" in pyright and "<i>" not in pyright, pyright)
     check("Args:<br>" in pyright and "the_value *x*" in pyright, pyright)
+    escaped = core.markdown_html("field \\`username\\` is never read")
+    check("\\" not in escaped and "`username`" in escaped and "<code" not in escaped, escaped)
+    rust = core.markdown_html("**Warning:** field `username` is never read")
+    check(">username</code>" in rust and "\\" not in rust, rust)
 
 
-def check_markup_perl_matlab():
+def check_markup_perl_matlab() -> None:
     css = list(markup_src.css_records())
     check(symbols(css, "display", "css"), "css display")
     check(symbols(css, "flex", "display"), "css display value")
@@ -822,7 +838,7 @@ def check_markup_perl_matlab():
         shutil.rmtree(directory)
 
 
-def check_venv():
+def check_venv() -> None:
     directory = os.path.realpath(tempfile.mkdtemp(prefix="intellekt-venv-"))
     try:
         exe = os.path.join(directory, ".venv", "bin", "python")
@@ -844,16 +860,23 @@ def check_venv():
         shutil.rmtree(directory, ignore_errors=True)
 
 
-def check_lsp_parsing():
+def check_lsp_parsing() -> None:
     rows, incomplete = lsp.completion_rows({"isIncomplete": True, "items": [
         {"label": " push_back(int x)", "kind": 2, "detail": "void",
          "textEdit": {"newText": "push_back(${1:int x})"}, "insertTextFormat": 2},
         {"label": "size", "kind": 5, "documentation": {"kind": "markdown", "value": "n"}},
     ]})
     check(incomplete, "isIncomplete")
-    check(rows[0] == ("push_back(int x)", "void", "push_back(${1:int x})", True, "method", ""),
+    check(rows[0][:6] == ("push_back(int x)", "void", "push_back(${1:int x})", True, "method", ""),
           "snippet row %s" % (rows[0],))
     check(rows[1][2] == "size" and rows[1][5] == "n", "plain row %s" % (rows[1],))
+    check(lsp.semantic_tokens([1, 2, 3, 0, 1, 0, 4, 2, 1, 0], {"tokenTypes": ["type", "function"], "tokenModifiers": ["declaration"]})
+          == [(1, 2, 3, "type", ["declaration"]), (1, 6, 2, "function", [])], "semantic token decode")
+    check(lsp.inlay_label({"label": [{"value": ": "}, {"value": "i32"}], "paddingLeft": True}) == " : i32", "inlay label")
+    check(len(lsp.selection_chain({"range": 1, "parent": {"range": 2}})) == 2, "selection chain")
+    postfix = lsp.completion_row({"label": "ref", "textEdit": {"newText": "&visa", "range": {
+        "start": {"line": 2, "character": 8}, "end": {"line": 2, "character": 13}}}})
+    check(postfix[2] == "&visa" and postfix[7] == (2, 8), "postfix row %s" % (postfix,))
     check(lsp.hover_text({"contents": {"language": "go", "value": "func F()"}})
           == "```go\nfunc F()\n```", "marked string hover")
     check(lsp.utf16_len("a\U0001F600") == 3, "utf-16 length")
@@ -861,13 +884,32 @@ def check_lsp_parsing():
     rows = lsp.diagnostic_rows([{"range": {"start": {"line": 1, "character": 2},
                                            "end": {"line": 1, "character": 5}},
                                  "severity": 2, "message": "unused", "source": "x"}])
-    check(rows == [((1, 2), (1, 5), 2, "unused (x)")], "diagnostic row %s" % rows)
-    ordered, _ = lsp.completion_rows([{"label": n} for n in ("__init__", "_x", "b", "a")])
-    check([row[0] for row in ordered] == ["a", "b", "_x", "__init__"],
+    check(rows[0][:4] == ((1, 2), (1, 5), 2, "unused (x)"), "diagnostic row %s" % rows)
+    edits = [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 3}}, "newText": "bar"},
+             {"range": {"start": {"line": 1, "character": 1}, "end": {"line": 1, "character": 1}}, "newText": "X"}]
+    check(lsp.apply_text_edits("foo\r\nab\n", edits) == "bar\r\naXb\n", "text edits keep line endings")
+    spaced = os.path.abspath(os.path.join(tempfile.gettempdir(), "a b.py"))
+    check(lsp.locations({"targetUri": lsp.file_uri(spaced),
+                         "targetSelectionRange": {"start": {"line": 3, "character": 4}}}) == [(spaced, 3, 4)],
+          "location link")
+    check(lsp.same_path(lsp.uri_path(lsp.file_uri(spaced)), spaced), "uri round trip")
+    nested = lsp.symbol_rows([{"name": "C", "kind": 5, "range": {}, "selectionRange": {"start": {"line": 1, "character": 6}},
+                               "children": [{"name": "m", "kind": 6, "selectionRange": {"start": {"line": 2, "character": 8}}}]}], "/f.py")
+    check(nested == [("C", "type", "/f.py", 1, 6, 0, ""), ("m", "method", "/f.py", 2, 8, 1, "")], "symbols %s" % nested)
+    sig = lsp.signature_markdown({"signatures": [{"label": "f(a, *b)", "parameters": [{"label": [2, 3]}, {"label": [5, 7]}]}],
+                                  "activeParameter": 1})
+    check(sig == "f(a, **\\*b**)", "signature %r" % sig)
+    target = os.path.abspath(os.path.join(tempfile.gettempdir(), "x.py"))
+    files = lsp.workspace_edit_files({"documentChanges": [{"textDocument": {"uri": lsp.file_uri(target)}, "edits": edits}]})
+    check(list(files) == [target] and len(files[target]) == 2, "workspace edit %s" % files)
+    ordered, _ = lsp.completion_rows([{"label": n} for n in ("__init__", "_x", "_A", "B", "b", "a")])
+    java, _ = lsp.completion_items([{"label": n} for n in ("b", "Zed", "_x", "a")], lsp.case_first("java"))
+    check([item["label"] for item in java] == ["Zed", "a", "b", "_x"], "java keeps A-Z: %s" % java)
+    check([row[0] for row in ordered] == ["a", "b", "B", "_x", "_A", "__init__"],
           "underscores last: %s" % [row[0] for row in ordered])
 
 
-def _lsp_complete(lang, root, path, text, want):
+def _lsp_complete(lang: str, root: str, path: str, text: str, want: str) -> None:
     """Complete at the end of ``text`` with the real server, if installed."""
     cmd = lsp.find_command(lang, path=lsp.search_path())
     if not cmd:
@@ -882,25 +924,31 @@ def _lsp_complete(lang, root, path, text, want):
         done = __import__("threading").Event()
         got = {}
 
-        def reply(result, error):
+        def reply(result: Any, error: Any) -> None:
             got["rows"] = lsp.completion_rows(result)[0] if not error else []
             got["error"] = error
             done.set()
 
         client.sync(path, lang, text, 1)
-        client.request("textDocument/completion", {
-            "textDocument": {"uri": lsp.file_uri(path)},
-            "position": {"line": len(lines) - 1, "character": lsp.utf16_len(lines[-1])},
-        }, reply)
-        check(done.wait(60), "%s did not answer" % cmd[0])
-        labels = [row[0] for row in got["rows"]]
+        # Some servers (ruby-lsp) answer empty until they finish indexing.
+        for attempt in range(5):
+            done.clear()
+            client.request("textDocument/completion", {
+                "textDocument": {"uri": lsp.file_uri(path)},
+                "position": {"line": len(lines) - 1, "character": lsp.utf16_len(lines[-1])},
+            }, reply)
+            check(done.wait(60), "%s did not answer" % cmd[0])
+            labels = [row[0] for row in got["rows"]]
+            if any(label.startswith(want) for label in labels):
+                break
+            __import__("time").sleep(2)
         check(any(label.startswith(want) for label in labels),
               "%s: %s missing from %s %s" % (cmd[0], want, labels[:10], got["error"]))
     finally:
         client.stop()
 
 
-def _lsp_diagnostics(directory):
+def _lsp_diagnostics(directory: str) -> None:
     """The Python server reports a type error through on_diagnostics."""
     cmd = lsp.find_command("python", path=lsp.search_path())
     if not cmd:
@@ -913,7 +961,7 @@ def _lsp_diagnostics(directory):
     done = __import__("threading").Event()
     got = []
 
-    def received(uri, diagnostics):
+    def received(uri: str, diagnostics: list[dict[str, Any]]) -> None:
         if uri == lsp.file_uri(path) and diagnostics:
             got.extend(lsp.diagnostic_rows(diagnostics))
             done.set()
@@ -929,10 +977,262 @@ def _lsp_diagnostics(directory):
         client.stop()
 
 
-def check_lsp_servers():
+def _lsp_features(directory: str) -> None:
+    """Every request the editor commands send, against the real Python server."""
+    cmd = lsp.find_command("python", path=lsp.search_path())
+    if not cmd:
+        print("skip: no python server")
+        return
+    import threading
+    import time
+    util = os.path.join(directory, "util.py")
+    main = os.path.join(directory, "app.py")
+    util_text = "def greet(name: str, times: int) -> str:\n    return name * times\n"
+    main_text = "import sys\nimport os\nfrom util import greet\n\ndef run():\n    return greet('a', 2)\n\ngreet("
+    for path, text in ((util, util_text), (main, main_text)):
+        with open(path, "w") as handle:
+            handle.write(text)
+    client = lsp.Client(cmd, directory)
+    client.start()
+
+    def ask(method: str, params: Any) -> Any:
+        done, got = threading.Event(), {}
+        client.request(method, params, lambda r, e: (got.update(r=r, e=e), done.set()))
+        check(done.wait(60), "%s timed out" % method)
+        check(not got["e"], "%s failed: %s" % (method, got["e"]))
+        return got["r"]
+
+    try:
+        client.sync(util, "python", util_text, 1)
+        client.sync(main, "python", main_text, 1)
+        doc = {"uri": lsp.file_uri(main)}
+        at_greet = {"textDocument": doc, "position": {"line": 5, "character": 12}}
+        time.sleep(1)
+        check(lsp.locations(ask("textDocument/definition", at_greet))[0][:2] == (util, 0), "definition")
+        refs = lsp.locations(ask("textDocument/references", dict(at_greet, context={"includeDeclaration": True})))
+        check(len(refs) >= 3, "references %s" % refs)
+        renamed = lsp.workspace_edit_files(ask("textDocument/rename", dict(at_greet, newName="hello")))
+        check(util in renamed and main in renamed, "rename touches both files: %s" % list(renamed))
+        sig = lsp.signature_markdown(ask("textDocument/signatureHelp",
+                                         {"textDocument": doc, "position": {"line": 7, "character": 6}}))
+        check("**name: str**" in sig, "signature %r" % sig)
+        actions = ask("textDocument/codeAction", {
+            "textDocument": doc, "range": {"start": {"line": 0, "character": 0}, "end": {"line": 7, "character": 6}},
+            "context": {"diagnostics": [], "only": ["source.organizeImports"]},
+        })
+        # Open-source pyright answers code actions with an empty list
+        # (Pylance has them). gopls is checked for real edits below.
+        check(isinstance(actions, list), "code action reply %s" % actions)
+        names = [row[0] for row in lsp.symbol_rows(ask("textDocument/documentSymbol", {"textDocument": doc}), main)]
+        check("run" in names, "document symbols %s" % names)
+        found = lsp.symbol_rows(ask("workspace/symbol", {"query": "greet"}))
+        check(any(row[0] == "greet" for row in found), "workspace symbols %s" % found)
+        items = ask("textDocument/prepareCallHierarchy", at_greet)
+        callers = ask("callHierarchy/incomingCalls", {"item": items[0]})
+        check(any(call["from"]["name"] == "run" for call in callers), "call hierarchy %s" % callers)
+        highlights = ask("textDocument/documentHighlight", at_greet)
+        check(len(highlights) >= 2, "highlights %s" % highlights)
+    finally:
+        client.stop()
+
+
+def _go_organize_imports(directory: str) -> None:
+    cmd = lsp.find_command("go", path=lsp.search_path())
+    if not cmd:
+        print("skip: no go server")
+        return
+    import threading
+    path = os.path.join(directory, "tidy.go")
+    text = 'package main\n\nimport (\n\t"os"\n\t"fmt"\n)\n\nfunc main() { fmt.Println() }\n'
+    with open(path, "w") as handle:
+        handle.write(text)
+    client = lsp.Client(cmd, directory)
+    client.start()
+    try:
+        client.sync(path, "go", text, 1)
+        done, got = threading.Event(), {}
+        client.request("textDocument/codeAction", {
+            "textDocument": {"uri": lsp.file_uri(path)},
+            "range": {"start": {"line": 0, "character": 0}, "end": {"line": 8, "character": 0}},
+            "context": {"diagnostics": [], "only": ["source.organizeImports"]},
+        }, lambda r, e: (got.update(r=r), done.set()))
+        check(done.wait(60), "gopls code action timed out")
+        action = (got["r"] or [{}])[0]
+        if "edit" not in action and action.get("data"):
+            done.clear()
+            client.request("codeAction/resolve", action, lambda r, e: (got.update(r=r), done.set()))
+            check(done.wait(60), "gopls resolve timed out")
+            action = got["r"] or {}
+        edits = lsp.workspace_edit_files(action.get("edit"))
+        tidy = lsp.apply_text_edits(text, edits.get(path, []))
+        check('"os"' not in tidy and '"fmt"' in tidy, "organize imports result %r" % tidy)
+    finally:
+        client.stop()
+
+
+def check_ruff_imports() -> None:
+    ruff = shutil.which("ruff", path=lsp.search_path())
+    if not ruff:
+        print("skip: no ruff")
+        return
+    path = os.path.join(tempfile.gettempdir(), "intellekt_sort.py")
+    messy = "import sys\nimport os\nfrom typing import List\nimport json\n\nprint(sys, os, json, List)\n"
+    tidy = core.sort_imports(ruff, messy, path)
+    check(tidy.startswith("import json\nimport os\nimport sys\nfrom typing import List\n"), "ruff sort %r" % tidy)
+
+
+def check_module_suggestions() -> None:
+    directory = tempfile.mkdtemp(prefix="intellekt-mods-")
+    try:
+        db_path = os.path.join(directory, "index.sqlite")
+        core.write_language(db_path, "python", "s", "1", [
+            {"t": "m", "name": n, "doc": ""} for n in ("pathlib", "pathlib._local", "patsy", "os", "_pathx")
+        ])
+        source = "import os\nimport patsy\n\nx = 1\npat"
+        got = [name for name, _doc in core.module_suggestions(db_path, source, "pat")]
+        check(got == ["pathlib"], "unimported modules %s" % got)
+        check(core.module_suggestions(db_path, source, "p") == [], "one letter lists nothing")
+        check(core.python_import_line(source) == 2, "import goes after the imports")
+        check(core.python_import_line('"""Doc."""\nx = 1\n') == 1, "after the docstring")
+        check(core.python_import_line("x = 1\n") == 0, "top of a file with no imports")
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def _live(
+    lang: str, root: str, files: dict[str, str], init: Optional[dict[str, Any]] = None,
+) -> Optional[tuple[lsp.Client, Callable[..., Any]]]:
+    """Start ``lang``'s real server on ``files`` ({path: text}): ``(client, ask)``, or None if absent."""
+    import threading
+    import time
+    cmd = lsp.find_command(lang, path=lsp.search_path())
+    if not cmd:
+        print("skip: no %s server" % lang)
+        return None
+    for path, text in files.items():
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as handle:
+            handle.write(text)
+    client = lsp.Client(cmd, root, env=dict(os.environ, PATH=lsp.search_path()), init_options=init)
+    notes = []
+    client.on_notify = lambda method, params: notes.append((method, params))
+    client.start()
+    for path, text in files.items():
+        client.sync(path, lang, text, 1)
+    for _ in range(120):
+        if client.capabilities or client.dead:
+            break
+        time.sleep(0.25)
+
+    def ask(method: str, params: Any, tries: int = 1) -> Any:
+        for attempt in range(tries):
+            done, got = threading.Event(), {}
+            client.request(method, params, lambda r, e: (got.update(r=r, e=e), done.set()))
+            check(done.wait(90), "%s %s timed out" % (cmd[0], method))
+            if (got["e"] or {}).get("code") in (-32801, -32800) and attempt < tries - 1:
+                time.sleep(2)  # content modified while the server indexes
+                continue
+            check(not got["e"], "%s %s failed: %s" % (cmd[0], method, got["e"]))
+            if got["r"] or attempt == tries - 1:
+                return got["r"]
+            time.sleep(2)
+
+    client.notes = notes
+    return client, ask
+
+
+def _features_go(directory: str) -> None:
+    root = os.path.join(directory, "gofeat")
+    path = os.path.join(root, "main.go")
+    text = ("package main\n\nimport \"fmt\"\n\ntype Shape interface{ Area() float64 }\n\n"
+            "type Square struct{ side float64 }\n\nfunc (s Square) Area() float64 {return s.side*s.side}\n\n"
+            "func main() {\n\tvar s Shape = Square{2}\n\tfmt.Println(s.Area())\n}\n")
+    live = _live("go", root, {os.path.join(root, "go.mod"): "module feat\n\ngo 1.21\n", path: text},
+                 init={"semanticTokens": True})
+    if not live:
+        return
+    client, ask = live
+    doc = {"uri": lsp.file_uri(path)}
+    try:
+        edits = ask("textDocument/formatting", {"textDocument": doc, "options": {"tabSize": 4, "insertSpaces": False}})
+        check("{ return s.side * s.side }" in lsp.apply_text_edits(text, edits or []), "gofmt result")
+        at_shape = {"textDocument": doc, "position": {"line": 4, "character": 6}}
+        impls = lsp.locations(ask("textDocument/implementation", at_shape, tries=3))
+        check(any(line == 6 for _path, line, _char in impls), "implementation of Shape: %s" % impls)
+        items = ask("textDocument/prepareTypeHierarchy", {"textDocument": doc, "position": {"line": 6, "character": 6}})
+        supers = ask("typeHierarchy/supertypes", {"item": items[0]})
+        check(any(item["name"] == "Shape" for item in supers or ()), "Square's supertypes: %s" % supers)
+        chain = lsp.selection_chain((ask("textDocument/selectionRange", {
+            "textDocument": doc, "positions": [{"line": 12, "character": 16}]}) or [{}])[0])
+        check(len(chain) >= 3, "selection ranges %s" % chain)
+        folds = ask("textDocument/foldingRange", {"textDocument": doc})
+        check(any(f["startLine"] == 10 for f in folds or ()), "fold main(): %s" % folds)
+        legend = client.capabilities["semanticTokensProvider"]["legend"]
+        tokens = lsp.semantic_tokens((ask("textDocument/semanticTokens/full", {"textDocument": doc}) or {}).get("data"), legend)
+        check(any(kind == "interface" or kind == "type" for _l, _c, _n, kind, _m in tokens), "semantic tokens %s" % tokens[:5])
+    finally:
+        client.stop()
+
+
+def _features_rust(directory: str) -> None:
+    root = os.path.join(directory, "rsfeat")
+    path = os.path.join(root, "src", "main.rs")
+    text = ("fn add(left: i32, right: i32) -> i32 {\n    left + right\n}\n\nfn main() {\n"
+            "    let total = add(1, 2);\n    println!(\"{}\", total);\n}\n\n#[test]\nfn works() {\n    assert_eq!(add(1, 1), 2);\n}\n")
+    live = _live("rust", root, {os.path.join(root, "Cargo.toml"): '[package]\nname = "rsfeat"\nversion = "0.1.0"\nedition = "2021"\n', path: text})
+    if not live:
+        return
+    client, ask = live
+    doc = {"uri": lsp.file_uri(path)}
+    try:
+        hints = ask("textDocument/inlayHint", {"textDocument": doc, "range": {
+            "start": {"line": 0, "character": 0}, "end": {"line": 13, "character": 0}}}, tries=10)
+        labels = [lsp.inlay_label(h).strip() for h in hints or ()]
+        check(any("i32" in label for label in labels) and any("left" in label for label in labels), "inlay hints %s" % labels)
+        lenses = ask("textDocument/codeLens", {"textDocument": doc}, tries=5) or []
+        titles = []
+        for lens in lenses:
+            if not lens.get("command"):
+                lens = ask("codeLens/resolve", lens) or lens
+            found = lsp.lens_command(lens)
+            if found:
+                titles.append(found[0])
+        check(any("Run" in title for title in titles), "code lens titles %s" % titles)
+    finally:
+        client.stop()
+
+
+def _features_cpp(directory: str) -> None:
+    root = os.path.join(directory, "cppfeat")
+    path = os.path.join(root, "main.cpp")
+    text = "#include <vector>\n\nint main() {\n#if 0\n  int unused = 1;\n#endif\n  return 0;\n}\n"
+    live = _live("cpp", root, {path: text})
+    if not live:
+        return
+    client, ask = live
+    try:
+        links = ask("textDocument/documentLink", {"textDocument": {"uri": lsp.file_uri(path)}}, tries=5)
+        check(any("vector" in (link.get("target") or "") for link in links or ()), "include link %s" % links)
+        import time
+        for _ in range(40):
+            if any(method == "textDocument/inactiveRegions" for method, _p in client.notes):
+                break
+            time.sleep(0.25)
+        regions = [p for method, p in client.notes if method == "textDocument/inactiveRegions"]
+        check(regions and regions[-1]["regions"] and regions[-1]["regions"][0]["start"]["line"] == 4,
+              "inactive regions %s" % regions)
+    finally:
+        client.stop()
+
+
+def check_lsp_servers() -> None:
     directory = os.path.realpath(tempfile.mkdtemp(prefix="intellekt-lsp-"))
     try:
         _lsp_diagnostics(directory)
+        _features_go(directory)
+        _features_rust(directory)
+        _features_cpp(directory)
+        _lsp_features(directory)
         _lsp_complete(
             "cpp", directory, os.path.join(directory, "main.cpp"),
             "#include <vector>\nint main() {\n  std::vector<int> v;\n  v.", "push_back",
@@ -947,14 +1247,26 @@ def check_lsp_servers():
             "go", directory, os.path.join(directory, "main.go"),
             'package main\n\nimport "strings"\n\nfunc main() {\n\tstrings.', "Builder",
         )
+        _go_organize_imports(directory)
+        _lsp_complete(
+            "typescript", directory, os.path.join(directory, "demo.ts"),
+            "const words: string[] = [];\nwords.", "push",
+        )
+        # ruby-lsp lives in RubyGems' bin folder, which is often not on PATH.
+        _lsp_complete(
+            "ruby", directory, os.path.join(directory, "demo.rb"),
+            "class Greeter\n  def hello(name)\n    name\n  end\n\n  def run\n    hel", "hello",
+        )
     finally:
         shutil.rmtree(directory, ignore_errors=True)
 
 
-def main():
+def main() -> None:
     check_venv()
     check_lsp_parsing()
     check_lsp_servers()
+    check_ruff_imports()
+    check_module_suggestions()
     check_markdown()
     check_cache()
     check_resolve()

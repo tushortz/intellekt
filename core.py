@@ -1,21 +1,17 @@
-"""Runtime detection, the symbol cache, and completion lookup.
+"""Runtime detection, the SQLite symbol cache, and completion lookup.
 
-The cache is SQLite outside the package (the package may be a read-only
-zip): one file for most languages, and one per Python interpreter so each
-virtual environment keeps its own packages. Python, Ruby, JavaScript, and
-PHP fill it from JSONL produced by the scripts in ``indexers/``. Java,
-TypeScript, C#, Go, Rust, and C++ fill it from the in-process scanners.
+The cache lives outside the package: one file for most languages, one per
+Python interpreter. It is filled from ``indexers/`` JSONL or in-process scanners.
 
-NOTE: Python names are resolved from an ``ast`` of the buffer. A line that
-does not parse (the one being typed) is replaced with ``pass`` and the parse
-is retried. Annotations and recorded return types are used.
-``a = datetime.now()`` follows ``now`` when the index has a return type, or
-when ``now`` is a classmethod. The other languages stay textual. There is
-no type checker here. ``lsp.py`` uses an installed language server instead
-when there is one.
+NOTE: Python names are resolved from the buffer's ``ast`` (an unparseable line
+becomes ``pass``), using annotations and indexed return types. Other languages
+stay textual. No type checker here; ``lsp.py`` uses a language server if installed.
 """
 
+from __future__ import annotations
+
 import ast
+import bisect
 import html
 import json
 import os
@@ -26,6 +22,7 @@ import sqlite3
 import subprocess
 import tempfile
 import time
+from typing import Any, Callable, Iterable, Iterator, Optional
 
 # Import paths. Member completion still uses ".", "->", and "::".
 SEP = {
@@ -44,6 +41,12 @@ SEP = {
     "perl": "::",
     "matlab": ".",
 }
+# Shared subprocess options: decode output without failing on odd bytes,
+# and on Windows do not flash a console window for every tool run.
+RUN_OPTIONS = {"text": True, "errors": "replace"}
+if os.name == "nt":
+    RUN_OPTIONS["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+
 # Bumped when the index contents change so an existing cache is rebuilt.
 _INDEX_VERSION = "8"
 
@@ -173,7 +176,7 @@ _SKIP_RECEIVERS = {"self", "this", "super", "cls", "$this"}
 _module_cache = {}
 
 
-def clip_doc(text):
+def clip_doc(text: Optional[str]) -> str:
     return (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
@@ -197,7 +200,7 @@ _LIST_START_RE = re.compile(r"\s*(?:[-*+]|\d+[.)])\s+\S")
 _ORDERED_RE = re.compile(r"\s*\d+[.)]\s+")
 
 
-def markdown_html(text):
+def markdown_html(text: Optional[str]) -> str:
     """Docstring markdown as minihtml for a hover popup."""
     text = (text or "").replace("\r\n", "\n").strip()
     if not text:
@@ -212,7 +215,7 @@ def markdown_html(text):
     return "<br><br>".join(chunk for chunk in chunks if chunk)
 
 
-def _code_html(text, block=False):
+def _code_html(text: str, block: bool = False) -> str:
     body = html.escape(text, quote=False)
     if block:
         return (
@@ -229,33 +232,41 @@ _RULE_RE = re.compile(r"\s*([-*_])(\s*\1){2,}\s*$")
 _RULE_HTML = '<div style="border-top: 1px solid color(var(--foreground) a(0.2));"></div>'
 
 
-def _md_text(raw):
-    """Escape one run of plain text. ``&nbsp;`` and other entities are decoded
-    first so they are not shown literally. An escaped character is parked in
-    the private-use range while bold and italic are applied, then restored."""
-    text = _ESCAPED_RE.sub(lambda m: chr(0xE000 + ord(m.group(1))), html.unescape(raw))
-    text = _md_format(html.escape(text, quote=True))
+def _park(raw: str) -> str:
+    """Move backslash-escaped chars into the private-use range, so an escaped
+    backtick or asterisk cannot start code, bold or italic."""
+    return _ESCAPED_RE.sub(lambda m: chr(0xE000 + ord(m.group(1))), raw)
+
+
+def _unpark(text: str) -> str:
     return re.sub("[\ue000-\ue0ff]", lambda m: html.escape(chr(ord(m.group(0)) - 0xE000)), text)
 
 
-def _md_inline(raw):
+def _md_text(raw: str) -> str:
+    """Escape plain text (entities decoded first), then apply bold/italic."""
+    return _unpark(_md_format(html.escape(_park(html.unescape(raw)), quote=True)))
+
+
+def _md_inline(raw: str) -> str:
+    # Escapes are parked before code spans are found: "\`a\`" is not code.
+    raw = _park(raw)
     parts = []
     pos = 0
     for match in _CODE_RE.finditer(raw):
         parts.append(_md_text(raw[pos:match.start()]))
-        parts.append(_code_html(match.group(1) or match.group(2)))
+        parts.append(_unpark(_code_html(match.group(1) or match.group(2))))
         pos = match.end()
     parts.append(_md_text(raw[pos:]))
     return "".join(parts)
 
 
-def _md_format(text):
+def _md_format(text: str) -> str:
     text = _LINK_RE.sub(r'<a href="\2">\1</a>', text)
     text = _BOLD_RE.sub(r"<b>\1</b>", text)
     return _ITALIC_RE.sub(r"<i>\1</i>", text)
 
 
-def _md_blocks(raw):
+def _md_blocks(raw: str) -> list[str]:
     lines = raw.split("\n")
     blocks = []
     i = 0
@@ -303,23 +314,23 @@ def _md_blocks(raw):
     return blocks
 
 
-def package_root():
+def package_root() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
-def _prefix_end(prefix):
+def _prefix_end(prefix: Optional[str]) -> Optional[str]:
     if not prefix:
         return None
     return prefix[:-1] + chr(ord(prefix[-1]) + 1)
 
 
-def _connect(path):
+def _connect(path: str) -> sqlite3.Connection:
     con = sqlite3.connect(path, timeout=2)
     con.execute("PRAGMA busy_timeout = 2000")
     return con
 
 
-def is_fresh(db_path, lang, source, version):
+def is_fresh(db_path: Optional[str], lang: str, source: str, version: str) -> bool:
     if not db_path or not os.path.exists(db_path):
         return False
     try:
@@ -335,8 +346,8 @@ def is_fresh(db_path, lang, source, version):
     return bool(row) and row[0] == source and row[1] == version
 
 
-def read_meta(db_path):
-    """Return {lang: {source, version, symbol_count}} for a built cache."""
+def read_meta(db_path: Optional[str]) -> dict[str, dict[str, Any]]:
+    """``{lang: {source, version, symbol_count}}`` for a built cache."""
     if not db_path or not os.path.exists(db_path):
         return {}
     try:
@@ -355,7 +366,7 @@ def read_meta(db_path):
     }
 
 
-def _ensure_schema(con):
+def _ensure_schema(con: sqlite3.Connection) -> None:
     con.executescript(_SCHEMA)
     # A cache built before return types existed has the old symbols table.
     cols = [row[1] for row in con.execute("PRAGMA table_info(symbols)")]
@@ -363,13 +374,11 @@ def _ensure_schema(con):
         con.execute("ALTER TABLE symbols ADD COLUMN returns TEXT NOT NULL DEFAULT ''")
 
 
-def write_language(db_path, lang, source, version, records):
-    """Replace one language in the cache, then swap the file into place.
-
-    ``records`` is an iterable of ``{"t": "m"|"s", ...}`` dicts. The live
-    database is replaced with ``os.replace`` only after the write commits,
-    so a reader never opens a half-built file.
-    """
+def write_language(
+    db_path: str, lang: str, source: str, version: str, records: Iterable[dict[str, Any]]
+) -> int:
+    """Replace one language from ``{"t": "m"|"s", ...}`` records; return the symbol count.
+    Built in a temp copy and swapped in with ``os.replace`` after commit."""
     directory = os.path.dirname(db_path)
     if directory:
         os.makedirs(directory, exist_ok=True)
@@ -435,9 +444,8 @@ def write_language(db_path, lang, source, version, records):
     return len(sym_rows)
 
 
-def drop_language(db_path, lang):
-    """Remove one language from a cache. Used once to move Python out of the
-    shared file into per-interpreter files."""
+def drop_language(db_path: Optional[str], lang: str) -> None:
+    """Remove one language from a cache (moves Python to per-interpreter files)."""
     if not db_path or not os.path.exists(db_path):
         return
     try:
@@ -456,13 +464,12 @@ def drop_language(db_path, lang):
     _module_cache.clear()
 
 
-def query_symbols(db_path, lang, owner, prefix, limit=80, public_only=False):
-    """Members of ``owner`` whose names start with ``prefix``.
-
-    Lookup is ``name >= prefix AND name < prefix_end`` so the
-    ``(lang, owner, name)`` index is used. ``public_only`` drops names
-    that start with ``_`` unless ``prefix`` itself does.
-    """
+def query_symbols(
+    db_path: Optional[str], lang: str, owner: Optional[str], prefix: Optional[str],
+    limit: int = 80, public_only: bool = False,
+) -> list[tuple[str, str, str, str]]:
+    """``(name, kind, signature, doc)`` members of ``owner`` starting with ``prefix``.
+    ``public_only`` hides ``_`` names unless ``prefix`` starts with ``_``."""
     if not db_path or not owner or not os.path.exists(db_path):
         return []
     hide_private = public_only and not (prefix or "").startswith("_")
@@ -484,8 +491,12 @@ def query_symbols(db_path, lang, owner, prefix, limit=80, public_only=False):
             if hide_private:
                 sql += " AND name NOT GLOB '_*'"
             # Public names first, so a class with many _private members
-            # does not fill the limit before its public ones.
-            sql += " ORDER BY (name GLOB '_*') + (name GLOB '__*'), name LIMIT ?"
+            # does not fill the limit before its public ones. Lowercase
+            # before Uppercase within each group.
+            sql += " ORDER BY (name GLOB '_*') + (name GLOB '__*'),"
+            if lang != "java":
+                sql += " (ltrim(name, '_') GLOB '[A-Z]*'),"
+            sql += " name LIMIT ?"
             args.append(limit)
             rows = con.execute(sql, args).fetchall()
         finally:
@@ -495,7 +506,7 @@ def query_symbols(db_path, lang, owner, prefix, limit=80, public_only=False):
     return rows
 
 
-def module_names(db_path, lang):
+def module_names(db_path: Optional[str], lang: str) -> list[tuple[str, str]]:
     """Every importable name for ``lang`` as ``(name, doc)``."""
     if not db_path or not os.path.exists(db_path):
         return []
@@ -523,7 +534,7 @@ def module_names(db_path, lang):
     return rows
 
 
-def module_exists(db_path, lang, name):
+def module_exists(db_path: Optional[str], lang: str, name: Optional[str]) -> bool:
     if not db_path or not name or not os.path.exists(db_path):
         return False
     try:
@@ -540,7 +551,7 @@ def module_exists(db_path, lang, name):
     return row is not None
 
 
-def module_doc(db_path, lang, name):
+def module_doc(db_path: Optional[str], lang: str, name: Optional[str]) -> str:
     if not db_path or not name or not os.path.exists(db_path):
         return ""
     try:
@@ -557,7 +568,9 @@ def module_doc(db_path, lang, name):
     return row[0] if row else ""
 
 
-def symbol_info(db_path, lang, owner, name):
+def symbol_info(
+    db_path: Optional[str], lang: str, owner: Optional[str], name: Optional[str]
+) -> Optional[tuple[str, str]]:
     """``(kind, returns)`` for one symbol, or None."""
     if not db_path or not owner or not name or not os.path.exists(db_path):
         return None
@@ -588,7 +601,7 @@ def symbol_info(db_path, lang, owner, name):
     return (row[0], row[1] or "")
 
 
-def symbol_doc(db_path, lang, owner, name):
+def symbol_doc(db_path: Optional[str], lang: str, owner: Optional[str], name: Optional[str]) -> str:
     if not db_path or not owner or not name or not os.path.exists(db_path):
         return ""
     try:
@@ -606,14 +619,11 @@ def symbol_doc(db_path, lang, owner, name):
     return row[0] if row else ""
 
 
-def import_segments(module_rows, typed, sep="."):
-    """Next path segment for an import prefix.
-
-    ``typed`` is the partial qualified name, such as ``java.ut`` or
-    ``java.util.``. Each result is
-    ``{"trigger", "annotation", "kind", "doc"}``. ``trigger`` replaces the
-    identifier currently being typed.
-    """
+def import_segments(
+    module_rows: Iterable[tuple[str, str]], typed: Optional[str], sep: str = "."
+) -> list[dict[str, Any]]:
+    """Next path segments for a partial import such as ``java.ut``.
+    Each item is ``{"trigger", "annotation", "kind", "doc"}``."""
     if typed is None:
         return []
     if typed.endswith(sep):
@@ -670,14 +680,14 @@ def import_segments(module_rows, typed, sep="."):
     return out
 
 
-def from_import_segments(module_rows, symbol_rows, typed, sep="."):
-    """Import-path segments plus names defined on that module.
-
-    ``from random import`` is typed as ``random.``. ``randint`` lives in
-    ``symbols``, not ``modules``, so path segments alone never offer it.
-    A name already offered as a module is left as that segment. Names
-    starting with ``_`` are skipped unless the typed prefix does too.
-    """
+def from_import_segments(
+    module_rows: Iterable[tuple[str, str]],
+    symbol_rows: Iterable[tuple[str, str, str, str]],
+    typed: Optional[str],
+    sep: str = ".",
+) -> list[dict[str, Any]]:
+    """Import segments plus symbols defined on the module (``from random import``).
+    ``_`` names are skipped unless the typed prefix starts with ``_``."""
     segments = import_segments(module_rows, typed, sep)
     if not typed or sep not in typed:
         return segments
@@ -708,7 +718,7 @@ def from_import_segments(module_rows, symbol_rows, typed, sep="."):
     return sorted(segments + extra, key=lambda item: item["trigger"].lower())
 
 
-def import_typed(lang, line):
+def import_typed(lang: str, line: str) -> Optional[str]:
     """Partial import path at the end of ``line``, or None if it is not an import."""
     if lang == "python":
         match = re.match(r"\s*from\s+([\w.]*)\s+import\b\s*(.*)$", line)
@@ -783,7 +793,7 @@ def import_typed(lang, line):
     return None
 
 
-def css_value(line):
+def css_value(line: Optional[str]) -> Optional[tuple[str, str]]:
     """``(property, partial)`` when ``line`` is completing a CSS value."""
     match = re.search(
         r"(?:^|[;{])\s*([A-Za-z-]{2,})\s*:\s*([A-Za-z-]*)$", line or ""
@@ -793,7 +803,7 @@ def css_value(line):
     return match.group(1).lower(), match.group(2).lower()
 
 
-def html_context(line):
+def html_context(line: Optional[str]) -> Optional[tuple[str, ...]]:
     """``('tag', partial)`` or ``('attr', tag, partial)`` inside a start tag."""
     line = line or ""
     match = re.search(r"<([A-Za-z][\w:-]*)$", line)
@@ -805,7 +815,7 @@ def html_context(line):
     return None
 
 
-def perl_assigns(source):
+def perl_assigns(source: Optional[str]) -> tuple[dict[str, str], set[str]]:
     assigned = {}
     calls = set()
     for match in re.finditer(r"\$(\w+)\s*=\s*([\w:]+)\s*->", source or ""):
@@ -815,7 +825,7 @@ def perl_assigns(source):
     return assigned, calls
 
 
-def perl_imports(source):
+def perl_imports(source: Optional[str]) -> dict[str, str]:
     """Names brought in by ``use Module qw(...)``."""
     bound = {}
     for match in re.finditer(
@@ -827,7 +837,7 @@ def perl_imports(source):
     return bound
 
 
-def matlab_assigns(source):
+def matlab_assigns(source: Optional[str]) -> tuple[dict[str, str], set[str]]:
     assigned = {}
     calls = set()
     for match in re.finditer(
@@ -838,7 +848,7 @@ def matlab_assigns(source):
     return assigned, calls
 
 
-def member_op(text):
+def member_op(text: Optional[str]) -> tuple[Optional[str], Optional[str]]:
     """Return ``(left, op)`` when ``text`` ends with ``.``, ``?.``, ``->``, or ``::``."""
     text = (text or "").rstrip()
     for op in ("?.", "->", "::", "."):
@@ -860,12 +870,11 @@ _LITERALS = {
 _IDENT_RE = re.compile(r"[$@]?[A-Za-z_]\w*$")
 
 
-def _opener(text, end):
+def _opener(text: str, end: int) -> int:
     """Index of the bracket that opens the one at ``text[end]``, or -1.
 
-    NOTE: quotes are skipped but escapes inside them are not. A string
-    argument that holds an escaped quote breaks the match, and the chain
-    is then left unresolved.
+    NOTE: quotes are skipped but escapes inside them are not, so an escaped
+    quote in a string argument breaks the match and leaves the chain unresolved.
     """
     pairs = {")": "(", "]": "[", "}": "{"}
     stack = []
@@ -887,15 +896,9 @@ def _opener(text, end):
     return -1
 
 
-def split_chain(text):
-    """Steps of the expression that ends ``text``, or None.
-
-    Each step is ``(op, name, called)``. The first step has no op and may
-    be a literal: ``"''"``, ``"b''"``, ``"[]"`` or ``"{}"``.
-    ``Path('x').parent.resolve()`` is
-    ``[("", "Path", True), (".", "parent", False), (".", "resolve", True)]``.
-    An indexed step (``xs[0]``) is not followed.
-    """
+def split_chain(text: Optional[str]) -> Optional[list[tuple[str, str, bool]]]:
+    """``(op, name, called)`` steps of the expression ending ``text``, or None.
+    The first step has no op and may be a literal (``''``, ``b''``, ``[]``, ``{}``)."""
     text = (text or "").rstrip()
     steps = []
     while True:
@@ -943,7 +946,7 @@ def split_chain(text):
     return steps
 
 
-def _java_owner(db_path, owner, type_name):
+def _java_owner(db_path: Optional[str], owner: str, type_name: Optional[str]) -> Optional[str]:
     """``String`` from a member of ``java.util.Foo`` is found in java.lang."""
     if not type_name or module_exists(db_path, "java", type_name):
         return type_name or None
@@ -954,7 +957,9 @@ def _java_owner(db_path, owner, type_name):
     return None
 
 
-def _follow(db_path, lang, owner, op, name, called):
+def _follow(
+    db_path: Optional[str], lang: str, owner: str, op: str, name: str, called: bool
+) -> Optional[str]:
     """Owner after one step from ``owner``, or None."""
     if lang == "python":
         qualified = owner + "." + name
@@ -975,12 +980,11 @@ def _follow(db_path, lang, owner, op, name, called):
     return found
 
 
-def member_owner(db_path, lang, source, left, depth=0):
+def member_owner(
+    db_path: Optional[str], lang: str, source: Optional[str], left: Optional[str], depth: int = 0
+) -> Optional[str]:
     """Owner of the expression before a member operator, or None.
-
-    The longest leading run of plain names goes through ``resolve_owner``.
-    Each later step follows the return type recorded in the index.
-    """
+    Leading plain names use ``resolve_owner``; later steps follow indexed return types."""
     steps = split_chain(left)
     if not steps or depth > 4:
         return None
@@ -1006,7 +1010,7 @@ def member_owner(db_path, lang, source, left, depth=0):
     return owner
 
 
-def _called(db_path, lang, owner):
+def _called(db_path: Optional[str], lang: str, owner: str) -> Optional[str]:
     """Instance type after calling ``owner``: a class or a typed function."""
     if lang == "python":
         return _call_result(db_path, owner) or None
@@ -1032,9 +1036,9 @@ _ALIAS = {
 _AST_INDEX = getattr(ast, "Index", ())
 
 
-def _rewrite_unions(source):
+def _rewrite_unions(source: str) -> str:
     """Turn ``X | Y`` into ``Union[X, Y]`` so Python 3.8 can parse it."""
-    def one(line):
+    def one(line: str) -> str:
         previous = None
         while previous != line:
             previous = line
@@ -1043,16 +1047,16 @@ def _rewrite_unions(source):
     return "\n".join(one(line) for line in source.splitlines())
 
 
-def _rewrite_generics(source):
+def _rewrite_generics(source: str) -> str:
     """Turn ``list[int]`` into ``List[int]`` so Python 3.8 can parse it."""
-    def one(line):
+    def one(line: str) -> str:
         for word in _GENERIC_WORDS:
             line = re.sub(r"\b%s\[" % word, word.capitalize() + "[", line)
         return line
     return "\n".join(one(line) for line in source.splitlines())
 
 
-def _relax_syntax(source):
+def _relax_syntax(source: str) -> str:
     if sys.version_info < (3, 10):
         source = _rewrite_unions(source)
     if sys.version_info < (3, 9):
@@ -1060,8 +1064,8 @@ def _relax_syntax(source):
     return source
 
 
-def _parse_python(source):
-    """Parse ``source``. A few unparseable lines are replaced with ``pass``.
+def _parse_python(source: str) -> Optional[ast.Module]:
+    """Parse ``source``, replacing a few unparseable lines with ``pass``.
 
     NOTE: at most six broken lines are repaired. Upgrade path: parse only the
     statements above the caret.
@@ -1088,13 +1092,13 @@ def _parse_python(source):
     return None
 
 
-def _slice(node):
+def _slice(node: ast.AST) -> ast.AST:
     if _AST_INDEX and isinstance(node, _AST_INDEX):
         return node.value
     return node
 
 
-def _dotted(node):
+def _dotted(node: ast.AST) -> str:
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.Attribute):
@@ -1105,7 +1109,7 @@ def _dotted(node):
     return ""
 
 
-def _parse_expr(text):
+def _parse_expr(text: str) -> Optional[ast.expr]:
     if not text:
         return None
     try:
@@ -1120,13 +1124,13 @@ def _parse_expr(text):
     return None
 
 
-def _is_ellipsis(node):
+def _is_ellipsis(node: ast.AST) -> bool:
     if isinstance(node, ast.Constant):
         return node.value is Ellipsis
     return type(node).__name__ == "Ellipsis"
 
 
-def _union_parts(node):
+def _union_parts(node: ast.AST) -> tuple[str, str]:
     elts = node.elts if isinstance(node, ast.Tuple) else [node]
     found = []
     for elt in elts:
@@ -1138,13 +1142,9 @@ def _union_parts(node):
     return "", ""
 
 
-def _ann_parts(node):
-    """``(type name, element name)`` from an annotation node.
-
-    ``datetime | None`` and ``Optional[datetime]`` are ``datetime``.
-    ``list[datetime]`` is ``(list, datetime)``. Two real types in one union
-    are left unresolved.
-    """
+def _ann_parts(node: Optional[ast.AST]) -> tuple[str, str]:
+    """``(type name, element name)`` from an annotation; ``Optional[X]`` is X,
+    ``list[X]`` is ``(list, X)``. A union of two real types is unresolved."""
     if node is None:
         return "", ""
     if isinstance(node, ast.Constant):
@@ -1193,14 +1193,14 @@ def _ann_parts(node):
     return "", ""
 
 
-def _expr_name(node):
+def _expr_name(node: ast.AST) -> tuple[str, bool]:
     """``(dotted name, is_call)`` for an assignment value."""
     if isinstance(node, ast.Call):
         return _dotted(node.func), True
     return _dotted(node), False
 
 
-def _chain_text(node):
+def _chain_text(node: ast.AST) -> str:
     """Source-like text for a call chain or literal, or ""."""
     if isinstance(node, ast.Name):
         return node.id
@@ -1229,7 +1229,7 @@ def _chain_text(node):
     return ""
 
 
-def _arg_nodes(args):
+def _arg_nodes(args: ast.arguments) -> list[ast.arg]:
     nodes = list(getattr(args, "posonlyargs", ()))
     nodes.extend(args.args)
     nodes.extend(args.kwonlyargs)
@@ -1239,17 +1239,17 @@ def _arg_nodes(args):
 class _PyFacts(ast.NodeVisitor):
     """Imports, assignments, and annotations in one buffer."""
 
-    def __init__(self):
-        self.bound = {}
-        self.assigned = {}
-        self.calls = set()
-        self.annotated = {}
-        self.elements = {}
+    def __init__(self) -> None:
+        self.bound: dict[str, str] = {}
+        self.assigned: dict[str, str] = {}
+        self.calls: set[str] = set()
+        self.annotated: dict[str, str] = {}
+        self.elements: dict[str, str] = {}
         # Values that are not a plain name or call, kept as text for
         # member_owner: "datetime.now().date()", "''", "[]".
-        self.chains = {}
+        self.chains: dict[str, str] = {}
 
-    def visit_Import(self, node):
+    def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             if alias.asname:
                 self.bound[alias.asname] = alias.name
@@ -1257,7 +1257,7 @@ class _PyFacts(ast.NodeVisitor):
                 top = alias.name.split(".")[0]
                 self.bound[top] = top
 
-    def visit_ImportFrom(self, node):
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if node.level or not node.module:
             return
         for alias in node.names:
@@ -1268,24 +1268,24 @@ class _PyFacts(ast.NodeVisitor):
             local = alias.asname or alias.name.split(".")[-1]
             self.bound[local] = node.module + "." + alias.name
 
-    def visit_FunctionDef(self, node):
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._function(node)
 
-    def visit_AsyncFunctionDef(self, node):
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         self._function(node)
 
-    def _function(self, node):
+    def _function(self, node: Any) -> None:
         for arg in _arg_nodes(node.args):
             if arg.annotation is not None:
                 self._annotate(arg.arg, arg.annotation)
         for stmt in node.body:
             self.visit(stmt)
 
-    def visit_ClassDef(self, node):
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
         for stmt in node.body:
             self.visit(stmt)
 
-    def visit_AnnAssign(self, node):
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if not isinstance(node.target, ast.Name):
             return
         if node.annotation is not None:
@@ -1293,18 +1293,18 @@ class _PyFacts(ast.NodeVisitor):
         if node.value is not None:
             self._assign(node.target.id, node.value)
 
-    def visit_Assign(self, node):
+    def visit_Assign(self, node: ast.Assign) -> None:
         for target in node.targets:
             if isinstance(target, ast.Name):
                 self._assign(target.id, node.value)
 
-    def visit_With(self, node):
+    def visit_With(self, node: ast.With) -> None:
         self._with(node)
 
-    def visit_AsyncWith(self, node):
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
         self._with(node)
 
-    def _with(self, node):
+    def _with(self, node: Any) -> None:
         # NOTE: assumes __enter__ returns self, true for files and sessions.
         for item in node.items:
             if isinstance(item.optional_vars, ast.Name):
@@ -1312,13 +1312,13 @@ class _PyFacts(ast.NodeVisitor):
         for stmt in node.body:
             self.visit(stmt)
 
-    def visit_For(self, node):
+    def visit_For(self, node: ast.For) -> None:
         self._for(node)
 
-    def visit_AsyncFor(self, node):
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
         self._for(node)
 
-    def _for(self, node):
+    def _for(self, node: Any) -> None:
         if (
             isinstance(node.target, ast.Name)
             and isinstance(node.iter, ast.Name)
@@ -1333,7 +1333,7 @@ class _PyFacts(ast.NodeVisitor):
         for stmt in node.orelse:
             self.visit(stmt)
 
-    def _annotate(self, name, node):
+    def _annotate(self, name: str, node: ast.AST) -> None:
         if name in _SKIP_RECEIVERS:
             return
         type_name, element = _ann_parts(node)
@@ -1345,7 +1345,7 @@ class _PyFacts(ast.NodeVisitor):
         else:
             self.elements.pop(name, None)
 
-    def _assign(self, name, value):
+    def _assign(self, name: str, value: ast.AST) -> None:
         if name in _SKIP_RECEIVERS:
             return
         expr, is_call = _expr_name(value)
@@ -1365,7 +1365,7 @@ class _PyFacts(ast.NodeVisitor):
             self.calls.discard(name)
 
 
-def _python_facts(source):
+def _python_facts(source: Optional[str]) -> _PyFacts:
     facts = _PyFacts()
     tree = _parse_python(source or "")
     if tree is not None:
@@ -1373,12 +1373,12 @@ def _python_facts(source):
     return facts
 
 
-def python_bindings(source):
+def python_bindings(source: Optional[str]) -> dict[str, str]:
     """Map a local name to the module or class it refers to."""
     return _python_facts(source).bound
 
 
-def _return_owner(db_path, owner, returns):
+def _return_owner(db_path: Optional[str], owner: str, returns: Optional[str]) -> str:
     """Qualified class for a stored return annotation."""
     returns = (returns or "").strip()
     if not returns or returns in ("None", "NoneType"):
@@ -1397,7 +1397,7 @@ def _return_owner(db_path, owner, returns):
     return ""
 
 
-def _call_result(db_path, qualified):
+def _call_result(db_path: Optional[str], qualified: str) -> str:
     """Instance type of a call, when the callee is a class or a typed function."""
     if module_exists(db_path, "python", qualified):
         return qualified
@@ -1410,7 +1410,7 @@ def _call_result(db_path, qualified):
     return _return_owner(db_path, owner, info[1])
 
 
-def _resolve_python_expr(bound, expr):
+def _resolve_python_expr(bound: dict[str, str], expr: str) -> Optional[str]:
     if expr in PYTHON_BUILTINS:
         return PYTHON_BUILTINS[expr]
     parts = expr.split(".")
@@ -1423,8 +1423,8 @@ def _resolve_python_expr(bound, expr):
     return None
 
 
-def java_imports(source):
-    """Return ``(explicit simple->fqcn, star packages, package name)``."""
+def java_imports(source: str) -> tuple[dict[str, str], list[str], str]:
+    """``(explicit simple->fqcn, star packages, package name)``."""
     explicit = {}
     stars = []
     package = ""
@@ -1442,7 +1442,7 @@ def java_imports(source):
     return explicit, stars, package
 
 
-def java_vars(source):
+def java_vars(source: str) -> dict[str, str]:
     """Map a local or field name to its simple type name."""
     found = {}
     pattern = re.compile(
@@ -1458,7 +1458,9 @@ def java_vars(source):
     return found
 
 
-def _java_type_owner(db_path, explicit, stars, package, simple):
+def _java_type_owner(
+    db_path: Optional[str], explicit: dict[str, str], stars: list[str], package: str, simple: str
+) -> Optional[str]:
     if simple in explicit:
         return explicit[simple]
     for pkg in stars:
@@ -1475,7 +1477,7 @@ def _java_type_owner(db_path, explicit, stars, package, simple):
     return None
 
 
-def ruby_vars(source):
+def ruby_vars(source: str) -> dict[str, str]:
     found = {}
     for match in re.finditer(
         r"(?m)^\s*(\w+)\s*=\s*([A-Z][\w:]*)\s*(?:\.new\b)?", source
@@ -1484,7 +1486,7 @@ def ruby_vars(source):
     return found
 
 
-def _split_member(qualified):
+def _split_member(qualified: str) -> tuple[str, str]:
     positions = []
     for sep in ("::", ".", "\\"):
         index = qualified.rfind(sep)
@@ -1496,7 +1498,7 @@ def _split_member(qualified):
     return qualified[:index], qualified[index + len(sep):]
 
 
-def _member_ref(db_path, lang, qualified, called):
+def _member_ref(db_path: Optional[str], lang: str, qualified: str, called: bool) -> Optional[str]:
     """Owner of a type, or the return type of a call."""
     if module_exists(db_path, lang, qualified):
         return qualified
@@ -1513,7 +1515,9 @@ def _member_ref(db_path, lang, qualified, called):
     return None
 
 
-def _qualify(expr, bound, prelude=None):
+def _qualify(
+    expr: str, bound: Optional[dict[str, str]], prelude: Optional[dict[str, str]] = None
+) -> str:
     names = dict(prelude or ())
     names.update(bound or ())
     for sep in ("::", "\\", "."):
@@ -1525,7 +1529,10 @@ def _qualify(expr, bound, prelude=None):
     return names.get(expr, expr)
 
 
-def _resolve_script(db_path, lang, expr, bound, assigned, calls, prelude=None):
+def _resolve_script(
+    db_path: Optional[str], lang: str, expr: str, bound: dict[str, str],
+    assigned: dict[str, str], calls: set[str], prelude: Optional[dict[str, str]] = None,
+) -> Optional[str]:
     called = False
     if expr in assigned:
         called = expr in calls
@@ -1543,7 +1550,7 @@ def _resolve_script(db_path, lang, expr, bound, assigned, calls, prelude=None):
     return None
 
 
-def js_bindings(source):
+def js_bindings(source: str) -> dict[str, str]:
     bound = {}
     patterns = (
         r"""import\s+\*\s+as\s+(\w+)\s+from\s+['"]([^'"]+)['"]""",
@@ -1566,7 +1573,7 @@ def js_bindings(source):
     return bound
 
 
-def js_assigns(source):
+def js_assigns(source: str) -> tuple[dict[str, str], set[str]]:
     assigned = {}
     calls = set()
     for match in re.finditer(
@@ -1592,10 +1599,10 @@ def js_assigns(source):
     return assigned, calls
 
 
-def cs_uses(source):
+def cs_uses(source: str) -> list[str]:
     """Namespaces in scope.
 
-    NOTE: ``System`` is always included. That is wrong for a project that
+    NOTE: ``System`` is always included, which is wrong for a project that
     disables implicit usings.
     """
     found = ["System"]
@@ -1606,7 +1613,7 @@ def cs_uses(source):
     return found
 
 
-def cs_assigns(source):
+def cs_assigns(source: str) -> tuple[dict[str, str], set[str]]:
     """Map a local to its type name.
 
     NOTE: a nested generic (``Dictionary<string, List<int>>``) is not read.
@@ -1628,7 +1635,7 @@ def cs_assigns(source):
     return assigned, calls
 
 
-def _cs_owner(db_path, namespaces, simple):
+def _cs_owner(db_path: Optional[str], namespaces: list[str], simple: str) -> Optional[str]:
     if not simple:
         return None
     if "." in simple and module_exists(db_path, "csharp", simple):
@@ -1643,7 +1650,7 @@ def _cs_owner(db_path, namespaces, simple):
     return None
 
 
-def _resolve_csharp(db_path, source, expr):
+def _resolve_csharp(db_path: Optional[str], source: str, expr: str) -> Optional[str]:
     uses = cs_uses(source)
     assigned, calls = cs_assigns(source)
     called = False
@@ -1657,7 +1664,7 @@ def _resolve_csharp(db_path, source, expr):
     return _cs_owner(db_path, uses, expr)
 
 
-def go_bindings(source):
+def go_bindings(source: str) -> dict[str, str]:
     """Map the local name to the import path.
 
     NOTE: a dot-import (``import . "fmt"``) is not expanded. Upgrade path:
@@ -1665,7 +1672,7 @@ def go_bindings(source):
     """
     bound = {}
 
-    def take(alias, path):
+    def take(alias: Optional[str], path: str) -> None:
         if not path or alias == "_":
             return
         if alias == ".":
@@ -1680,7 +1687,7 @@ def go_bindings(source):
     return bound
 
 
-def go_assigns(source):
+def go_assigns(source: str) -> tuple[dict[str, str], set[str]]:
     assigned = {}
     calls = set()
     for match in re.finditer(
@@ -1696,7 +1703,7 @@ def go_assigns(source):
     return assigned, calls
 
 
-def php_bindings(source):
+def php_bindings(source: str) -> dict[str, str]:
     bound = {}
     for match in re.finditer(
         r"(?m)^\s*use\s+([\w\\]+)(?:\s+as\s+(\w+))?\s*;", source
@@ -1706,7 +1713,7 @@ def php_bindings(source):
     return bound
 
 
-def php_assigns(source):
+def php_assigns(source: str) -> tuple[dict[str, str], set[str]]:
     assigned = {}
     calls = set()
     for match in re.finditer(r"\$(\w+)\s*=\s*new\s+\\?([\w\\]+)", source):
@@ -1721,7 +1728,7 @@ def php_assigns(source):
     return assigned, calls
 
 
-def rust_bindings(source):
+def rust_bindings(source: str) -> dict[str, str]:
     bound = {}
     for match in re.finditer(r"(?m)^\s*use\s+([^;]+);", source):
         clause = match.group(1).strip()
@@ -1746,7 +1753,7 @@ def rust_bindings(source):
     return bound
 
 
-def rust_assigns(source):
+def rust_assigns(source: str) -> tuple[dict[str, str], set[str]]:
     assigned = {}
     calls = set()
     for match in re.finditer(
@@ -1768,7 +1775,7 @@ def rust_assigns(source):
     return assigned, calls
 
 
-def cpp_assigns(source):
+def cpp_assigns(source: str) -> dict[str, str]:
     """Map a local to a ``std::`` type or a capitalized type.
 
     NOTE: nested templates (``map<int, vector<int>>``) are not read.
@@ -1789,7 +1796,7 @@ def cpp_assigns(source):
     return assigned
 
 
-def _resolve_cpp(db_path, source, expr):
+def _resolve_cpp(db_path: Optional[str], source: str, expr: str) -> Optional[str]:
     assigned = cpp_assigns(source)
     if expr in assigned:
         expr = assigned[expr]
@@ -1798,7 +1805,10 @@ def _resolve_cpp(db_path, source, expr):
     return _member_ref(db_path, "cpp", expr, False)
 
 
-def _types_under(db_path, lang, namespace, prefix, add, sep="."):
+def _types_under(
+    db_path: Optional[str], lang: str, namespace: str, prefix: str,
+    add: Callable[[str, str, str, str], None], sep: str = ".",
+) -> None:
     needle = namespace + sep + prefix
     end = _prefix_end(needle)
     base = namespace + sep
@@ -1815,7 +1825,9 @@ def _types_under(db_path, lang, namespace, prefix, add, sep="."):
         add(rest, name, "type", doc)
 
 
-def resolve_owner(db_path, lang, source, expr, depth=0):
+def resolve_owner(
+    db_path: Optional[str], lang: str, source: Optional[str], expr: Optional[str], depth: int = 0
+) -> Optional[str]:
     """Qualified owner for the name before a dot, or None."""
     if not expr:
         return None
@@ -1890,16 +1902,56 @@ def resolve_owner(db_path, lang, source, expr, depth=0):
     return None
 
 
-def bare_names(db_path, lang, source, prefix):
-    """Imported and builtin type names starting with ``prefix``.
+def module_suggestions(
+    db_path: Optional[str], source: Optional[str], prefix: str, limit: int = 20
+) -> list[tuple[str, str]]:
+    """Unimported top-level Python modules starting with ``prefix`` (2+ chars), as ``(name, doc)``."""
+    if len(prefix) < 2:
+        return []
+    bound = set(python_bindings(source))
+    rows = module_names(db_path, "python")
+    found = []
+    for name, doc in rows[bisect.bisect_left(rows, (prefix,)):]:
+        if not name.startswith(prefix):
+            break
+        if "." in name or name in bound:
+            continue
+        found.append((name, doc))
+        if len(found) >= limit:
+            break
+    return found
 
-    Each item is ``(trigger, annotation, kind, doc)``.
+
+def python_import_line(source: Optional[str]) -> int:
+    """0-based line for a new ``import``: after top imports, else the docstring, else 0.
+
+    NOTE: if the first statement is not an import or docstring (or the file
+    starts with a shebang/comment block), the import goes at that point/line 0.
     """
+    tree = _parse_python(source or "")
+    line = 0
+    for index, node in enumerate(tree.body if tree else ()):
+        is_docstring = (
+            index == 0 and isinstance(node, ast.Expr)
+            and isinstance(getattr(node, "value", None), ast.Constant)
+            and isinstance(node.value.value, str)
+        )
+        if isinstance(node, (ast.Import, ast.ImportFrom)) or is_docstring:
+            line = node.end_lineno
+        else:
+            break
+    return line
+
+
+def bare_names(
+    db_path: Optional[str], lang: str, source: str, prefix: Optional[str]
+) -> list[tuple[str, str, str, str]]:
+    """Imported and builtin names starting with ``prefix``, as ``(trigger, annotation, kind, doc)``."""
     if not prefix:
         return []
     items = {}
 
-    def add(trigger, annotation, kind, doc):
+    def add(trigger: str, annotation: str, kind: str, doc: str) -> None:
         if trigger.startswith(prefix) and trigger not in items:
             items[trigger] = (trigger, annotation, kind, doc)
 
@@ -1981,7 +2033,7 @@ def bare_names(db_path, lang, source, prefix):
     return [items[key] for key in sorted(items, key=str.lower)]
 
 
-def iter_jsonl(path):
+def iter_jsonl(path: str) -> Iterator[dict[str, Any]]:
     with open(path, encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
@@ -1995,12 +2047,9 @@ def iter_jsonl(path):
                 yield rec
 
 
-def run_indexer(executable, script_name, timeout=180):
-    """Run an indexer script and yield its JSONL records.
-
-    The script is executed by the language's own interpreter so Sublime's
-    plugin host never imports user code.
-    """
+def run_indexer(executable: str, script_name: str, timeout: float = 180) -> Iterator[dict[str, Any]]:
+    """Yield JSONL records from an indexer run by the language's own interpreter,
+    so the plugin host never imports user code."""
     script = os.path.join(package_root(), "indexers", script_name)
     # The package itself may be a read-only zip, so the JSONL goes to a temp file.
     handle = tempfile.NamedTemporaryFile(prefix="intellekt-", suffix=".jsonl", delete=False)
@@ -2010,7 +2059,7 @@ def run_indexer(executable, script_name, timeout=180):
         proc = subprocess.run(
             [executable, script, "--out", out_path],
             capture_output=True,
-            text=True,
+            **RUN_OPTIONS,
             timeout=timeout,
         )
         if proc.returncode != 0:
@@ -2025,10 +2074,10 @@ def run_indexer(executable, script_name, timeout=180):
                 pass
 
 
-def _run_version(argv):
+def _run_version(argv: list[str]) -> str:
     try:
         proc = subprocess.run(
-            argv, capture_output=True, text=True, timeout=15,
+            argv, capture_output=True, **RUN_OPTIONS, timeout=15,
         )
     except (OSError, subprocess.TimeoutExpired):
         return ""
@@ -2039,7 +2088,7 @@ def _run_version(argv):
 _VENV_DIRS = (".venv", "venv", "env", ".env", "virtualenv")
 
 
-def _venv_python(prefix):
+def _venv_python(prefix: Optional[str]) -> str:
     if not prefix:
         return ""
     for rel in (("bin", "python3"), ("bin", "python"), ("Scripts", "python.exe")):
@@ -2049,16 +2098,12 @@ def _venv_python(prefix):
     return ""
 
 
-def find_venv(file_path, folders=()):
-    """Interpreter of the virtual environment that owns ``file_path``, or "".
+def find_venv(file_path: Optional[str], folders: Iterable[str] = ()) -> str:
+    """Interpreter of the venv owning ``file_path`` (walking up to the project
+    folder), then ``$VIRTUAL_ENV``/``$CONDA_PREFIX``; else "".
 
-    Walks up from the file looking for ``.venv``, ``venv``, ``env``, ``.env``
-    or ``virtualenv`` holding a ``pyvenv.cfg``. The walk stops at the
-    project folder that contains the file. Then ``$VIRTUAL_ENV`` and
-    ``$CONDA_PREFIX`` are tried.
     NOTE: Poetry and Pipenv environments outside the project are not found.
-    Upgrade path: ask ``poetry env info -p``. Until then, set
-    ``python_executable``.
+    Upgrade path: ask ``poetry env info -p``. Until then, set ``"python": {"executable": ...}``.
     """
     roots = [os.path.abspath(folder) for folder in folders or ()]
     if file_path:
@@ -2089,8 +2134,48 @@ def find_venv(file_path, folders=()):
     return ""
 
 
-def detect_python(executable=""):
-    exe = executable or shutil.which("python3") or shutil.which("python")
+def sort_imports(tool: str, text: str, path: str) -> str:
+    """``text`` with imports sorted by ruff or isort, per project settings. Raises RuntimeError."""
+    if os.path.basename(tool).split(".")[0] == "isort":
+        argv = [tool, "-", "--filename", path]
+    else:
+        argv = [tool, "check", "--select", "I", "--fix", "--exit-zero", "--no-cache",
+                "--quiet", "--stdin-filename", path, "-"]
+    proc = subprocess.run(
+        argv, input=text, capture_output=True, timeout=15,
+        cwd=os.path.dirname(path) or None, **RUN_OPTIONS,
+    )
+    if proc.returncode != 0 or not proc.stdout:
+        raise RuntimeError((proc.stderr or "failed").strip()[-300:])
+    return proc.stdout
+
+
+def format_python(tool: str, text: str, path: str) -> str:
+    """``text`` formatted by ruff or black, per project settings. Raises RuntimeError."""
+    if os.path.basename(tool).split(".")[0] == "black":
+        argv = [tool, "--quiet", "--stdin-filename", path, "-"]
+    else:
+        argv = [tool, "format", "--quiet", "--stdin-filename", path, "-"]
+    proc = subprocess.run(
+        argv, input=text, capture_output=True, timeout=15,
+        cwd=os.path.dirname(path) or None, **RUN_OPTIONS,
+    )
+    if proc.returncode != 0 or not proc.stdout:
+        raise RuntimeError((proc.stderr or "failed").strip()[-300:])
+    return proc.stdout
+
+
+def system_python(path: Optional[str] = None) -> str:
+    """The Python on PATH, skipping the Windows Store stub."""
+    for name in ("python3", "python", "py"):
+        exe = shutil.which(name, path=path)
+        if exe and "WindowsApps" not in exe:
+            return exe
+    return ""
+
+
+def detect_python(executable: str = "") -> Optional[dict[str, Any]]:
+    exe = executable or system_python()
     if not exe or not os.path.isfile(exe):
         return None
     version = _run_version([exe, "-c", "import sys; print(sys.version.split()[0])"])
@@ -2099,7 +2184,7 @@ def detect_python(executable=""):
     return {"source": exe, "version": version + "|" + _INDEX_VERSION, "executable": exe}
 
 
-def detect_ruby(executable=""):
+def detect_ruby(executable: str = "") -> Optional[dict[str, Any]]:
     exe = executable or shutil.which("ruby")
     if not exe or not os.path.isfile(exe):
         return None
@@ -2109,8 +2194,8 @@ def detect_ruby(executable=""):
     return {"source": exe, "version": version + "|" + _INDEX_VERSION, "executable": exe}
 
 
-def _src_zip(home):
-    """Return ``(jdk_home, src_zip)`` for a JDK prefix, including Homebrew."""
+def _src_zip(home: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """``(jdk_home, src_zip)`` for a JDK prefix, including Homebrew."""
     if not home:
         return None, None
     home = os.path.abspath(os.path.expanduser(home))
@@ -2124,7 +2209,7 @@ def _src_zip(home):
     return None, None
 
 
-def _java_version(home):
+def _java_version(home: str) -> str:
     release = os.path.join(home, "release")
     if os.path.isfile(release):
         try:
@@ -2137,7 +2222,7 @@ def _java_version(home):
     return "unknown"
 
 
-def _jdk_from_java_bin(java_bin):
+def _jdk_from_java_bin(java_bin: str) -> Optional[str]:
     try:
         java_bin = os.path.realpath(java_bin)
     except OSError:
@@ -2147,7 +2232,9 @@ def _jdk_from_java_bin(java_bin):
     return found
 
 
-def detect_java(java_home="", extra_sources=None):
+def detect_java(
+    java_home: str = "", extra_sources: Optional[Iterable[Any]] = None
+) -> Optional[dict[str, Any]]:
     """Find a JDK that ships ``lib/src.zip``. A JRE is not enough."""
     candidates = []
     if java_home:
@@ -2193,7 +2280,7 @@ def detect_java(java_home="", extra_sources=None):
     return {"source": home, "version": version, "sources": sources}
 
 
-def detect_javascript(executable=""):
+def detect_javascript(executable: str = "") -> Optional[dict[str, Any]]:
     """Find Node. The indexer reads the global npm root, not a project."""
     exe = executable or shutil.which("node")
     if not exe or not os.path.isfile(exe):
@@ -2204,7 +2291,7 @@ def detect_javascript(executable=""):
     return {"source": exe, "version": version + "|" + _INDEX_VERSION, "executable": exe}
 
 
-def _npm_root():
+def _npm_root() -> str:
     npm = shutil.which("npm")
     if not npm:
         return ""
@@ -2214,7 +2301,7 @@ def _npm_root():
     return ""
 
 
-def _typescript_lib(tsc, npm_root):
+def _typescript_lib(tsc: str, npm_root: str) -> str:
     candidates = []
     if tsc and os.path.isfile(tsc):
         real = os.path.realpath(tsc)
@@ -2227,7 +2314,7 @@ def _typescript_lib(tsc, npm_root):
     return ""
 
 
-def detect_typescript(tsc_executable=""):
+def detect_typescript(tsc_executable: str = "") -> Optional[dict[str, Any]]:
     """Find the installed ``typescript`` package. A project tree is not read."""
     tsc = tsc_executable or shutil.which("tsc") or ""
     if tsc and not os.path.isfile(tsc):
@@ -2252,7 +2339,7 @@ def detect_typescript(tsc_executable=""):
     }
 
 
-def detect_csharp(dotnet_root=""):
+def detect_csharp(dotnet_root: str = "") -> Optional[dict[str, Any]]:
     """Find a .NET targeting pack that ships XML docs."""
     root = dotnet_root or os.environ.get("DOTNET_ROOT") or ""
     if root:
@@ -2289,7 +2376,7 @@ def detect_csharp(dotnet_root=""):
     }
 
 
-def detect_go(executable=""):
+def detect_go(executable: str = "") -> Optional[dict[str, Any]]:
     exe = executable or shutil.which("go")
     if not exe or not os.path.isfile(exe):
         return None
@@ -2309,7 +2396,7 @@ def detect_go(executable=""):
     }
 
 
-def detect_php(executable=""):
+def detect_php(executable: str = "") -> Optional[dict[str, Any]]:
     exe = executable or shutil.which("php")
     if not exe or not os.path.isfile(exe):
         return None
@@ -2319,7 +2406,7 @@ def detect_php(executable=""):
     return {"source": exe, "version": version + "|" + _INDEX_VERSION, "executable": exe}
 
 
-def detect_rust(executable=""):
+def detect_rust(executable: str = "") -> Optional[dict[str, Any]]:
     """Find rust-src. Nothing is downloaded when the component is missing."""
     exe = executable or shutil.which("rustc")
     if not exe or not os.path.isfile(exe):
@@ -2345,13 +2432,13 @@ def detect_rust(executable=""):
     }
 
 
-def _include_dirs(compiler, language):
+def _include_dirs(compiler: str, language: str) -> list[str]:
     try:
         proc = subprocess.run(
             [compiler, "-E", "-x", language, "-", "-v"],
             input="",
             capture_output=True,
-            text=True,
+            **RUN_OPTIONS,
             timeout=15,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -2375,19 +2462,19 @@ def _include_dirs(compiler, language):
     return dirs
 
 
-def detect_css():
+def detect_css() -> dict[str, Any]:
     return {"source": "css", "version": "css|" + _INDEX_VERSION}
 
 
-def detect_html():
+def detect_html() -> dict[str, Any]:
     return {"source": "html", "version": "html|" + _INDEX_VERSION}
 
 
-def _perl_inc(exe):
+def _perl_inc(exe: str) -> list[str]:
     try:
         proc = subprocess.run(
             [exe, "-e", r'print join("\n", @INC)'],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, **RUN_OPTIONS, timeout=15,
         )
     except (OSError, subprocess.TimeoutExpired):
         return []
@@ -2400,7 +2487,7 @@ def _perl_inc(exe):
     return roots
 
 
-def detect_perl(executable=""):
+def detect_perl(executable: str = "") -> Optional[dict[str, Any]]:
     exe = executable or ""
     if exe and not os.path.isfile(exe):
         exe = shutil.which(exe) or ""
@@ -2420,15 +2507,15 @@ def detect_perl(executable=""):
     }
 
 
-def _command_lines(argv, timeout=15):
+def _command_lines(argv: list[str], timeout: float = 15) -> list[str]:
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(argv, capture_output=True, **RUN_OPTIONS, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired):
         return []
     return [line.strip() for line in (proc.stdout or "").splitlines() if line.strip()]
 
 
-def _octave_roots(exe):
+def _octave_roots(exe: str) -> list[str]:
     cfg = os.path.join(os.path.dirname(exe), "octave-config")
     if not os.path.isfile(cfg):
         cfg = shutil.which("octave-config") or ""
@@ -2442,7 +2529,7 @@ def _octave_roots(exe):
     return roots
 
 
-def _matlab_roots(exe):
+def _matlab_roots(exe: str) -> list[str]:
     lines = _command_lines([exe, "-batch", "disp(matlabroot)"], timeout=30)
     if not lines:
         return []
@@ -2452,7 +2539,7 @@ def _matlab_roots(exe):
     return []
 
 
-def detect_matlab(executable=""):
+def detect_matlab(executable: str = "") -> Optional[dict[str, Any]]:
     exe = executable or ""
     if exe and not os.path.isfile(exe):
         exe = shutil.which(exe) or ""
@@ -2482,7 +2569,7 @@ def detect_matlab(executable=""):
     }
 
 
-def detect_cpp(compiler=""):
+def detect_cpp(compiler: str = "") -> Optional[dict[str, Any]]:
     exe = compiler or ""
     if exe and not os.path.isfile(exe):
         exe = shutil.which(exe) or ""
@@ -2504,20 +2591,20 @@ def detect_cpp(compiler=""):
 
 
 def detect_all(
-    python_executable="",
-    ruby_executable="",
-    java_home="",
-    java_sources=None,
-    node_executable="",
-    tsc_executable="",
-    dotnet_root="",
-    go_executable="",
-    php_executable="",
-    rustc_executable="",
-    cxx_compiler="",
-    perl_executable="",
-    matlab_executable="",
-):
+    python_executable: str = "",
+    ruby_executable: str = "",
+    java_home: str = "",
+    java_sources: Optional[Iterable[Any]] = None,
+    node_executable: str = "",
+    tsc_executable: str = "",
+    dotnet_root: str = "",
+    go_executable: str = "",
+    php_executable: str = "",
+    rustc_executable: str = "",
+    cxx_compiler: str = "",
+    perl_executable: str = "",
+    matlab_executable: str = "",
+) -> dict[str, Optional[dict[str, Any]]]:
     return {
         "python": detect_python(python_executable),
         "java": detect_java(java_home, java_sources),
@@ -2536,7 +2623,9 @@ def detect_all(
     }
 
 
-def status_text(db_path, detected, langs=LANGS):
+def status_text(
+    db_path: Optional[str], detected: dict[str, Optional[dict[str, Any]]], langs: Iterable[str] = LANGS
+) -> str:
     meta = read_meta(db_path)
     lines = []
     for lang in langs:

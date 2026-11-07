@@ -1,20 +1,18 @@
-"""Scan Rust sources.
+"""Scan Rust sources; ``core``/``alloc`` items are mirrored under ``std::``.
 
-A file ``library/core/src/option.rs`` owns ``core::option``. Types in
-``core`` and ``alloc`` are also recorded under ``std::`` so ``use std::vec::Vec``
-hits the same methods. ``pub use`` re-exports are not followed.
+NOTE: braces in strings confuse the scan; ``pub use`` and ``sys`` dirs are
+skipped; the cargo registry stops at the file cap. Upgrade path:
+rust-analyzer's parser, run outside Sublime.
 
-NOTE: braces inside strings confuse the scan, and ``pub use`` is skipped.
-``sys`` directories are skipped. The cargo registry stops after the file
-cap. Upgrade path: rust-analyzer's parser, run outside Sublime.
-
-NOTE: the crate of the project being edited is not indexed. Upgrade path:
-index the active view's folder. If the rust-src component is missing, Rust
-stays quiet. Nothing is downloaded.
+NOTE: the edited project's crate is not indexed. Upgrade path: index the
+active view's folder. Without rust-src, nothing is indexed or downloaded.
 """
+
+from __future__ import annotations
 
 import os
 import re
+from typing import Any, Callable, Iterator, Optional
 
 from . import merge_modules, read_text, walk_files
 
@@ -35,7 +33,7 @@ _IMPL_RE = re.compile(
 )
 
 
-def _std_names(name):
+def _std_names(name: str) -> list[str]:
     names = [name]
     for crate in ("core::", "alloc::"):
         if name.startswith(crate):
@@ -45,7 +43,7 @@ def _std_names(name):
     return names
 
 
-def _full(prefix, simple):
+def _full(prefix: str, simple: str) -> str:
     if not simple:
         return prefix
     if "::" in simple or not prefix:
@@ -53,7 +51,7 @@ def _full(prefix, simple):
     return prefix + "::" + simple
 
 
-def _snippet(name, args):
+def _snippet(name: str, args: Optional[str]) -> str:
     labels = []
     for part in (args or "").split(","):
         part = part.strip()
@@ -69,7 +67,7 @@ def _snippet(name, args):
     return "%s(%s)" % (name, ", ".join(bits))
 
 
-def _returns(text, prefix, owner):
+def _returns(text: Optional[str], prefix: str, owner: str) -> str:
     text = (text or "").strip()
     text = text.split("<", 1)[0].strip().rstrip(",")
     if text in ("Self", "self"):
@@ -79,8 +77,8 @@ def _returns(text, prefix, owner):
     return _full(prefix, text)
 
 
-def scan_source(text, prefix):
-    """Return records for one Rust file whose module path is ``prefix``."""
+def scan_source(text: str, prefix: str) -> list[dict[str, Any]]:
+    """Return records for one Rust file with module path ``prefix``."""
     out = []
     if prefix:
         for name in _std_names(prefix):
@@ -90,11 +88,11 @@ def scan_source(text, prefix):
     struct = None
     pending = []
 
-    def emit_module(name, doc):
+    def emit_module(name: str, doc: str) -> None:
         for full in _std_names(name):
             out.append({"t": "m", "name": full, "doc": doc if full == name else ""})
 
-    def emit_symbol(owner, name, kind, signature, doc, returns=""):
+    def emit_symbol(owner: str, name: str, kind: str, signature: str, doc: str, returns: str = "") -> None:
         for full in _std_names(owner):
             out.append({
                 "t": "s", "owner": full, "name": name, "kind": kind,
@@ -160,7 +158,7 @@ def scan_source(text, prefix):
     return out
 
 
-def _std_prefix(path, root):
+def _std_prefix(path: str, root: str) -> str:
     rel = os.path.relpath(path, root)
     parts = rel.split(os.sep)
     if "src" not in parts or not parts:
@@ -178,7 +176,7 @@ def _std_prefix(path, root):
     return "::".join([crate] + mods) if mods else crate
 
 
-def _cargo_prefix(path, root):
+def _cargo_prefix(path: str, root: str) -> str:
     rel = os.path.relpath(path, root)
     parts = rel.split(os.sep)
     if len(parts) < 2 or "src" not in parts:
@@ -194,7 +192,7 @@ def _cargo_prefix(path, root):
     return "::".join([crate] + mods) if mods else crate
 
 
-def _tree(root, prefix_of, limit):
+def _tree(root: str, prefix_of: Callable[[str, str], str], limit: int) -> Iterator[dict[str, Any]]:
     if not root or not os.path.isdir(root):
         return
     for path in walk_files([root], (".rs",), limit, _SKIP):
@@ -206,9 +204,9 @@ def _tree(root, prefix_of, limit):
             yield rec
 
 
-def scan_roots(library, cargo="", limit=MAX_FILES):
+def scan_roots(library: str, cargo: str = "", limit: int = MAX_FILES) -> Iterator[dict[str, Any]]:
     """Yield records from the rust-src library, then the cargo registry."""
-    def records():
+    def records() -> Iterator[dict[str, Any]]:
         yield from _tree(library, _std_prefix, limit)
         if cargo:
             yield from _tree(cargo, _cargo_prefix, limit)

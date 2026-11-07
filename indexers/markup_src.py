@@ -1,9 +1,8 @@
-"""CSS properties and HTML tags.
+"""CSS properties/values and HTML tags/attributes as fixed lists (no toolchain to scan)."""
 
-Neither language has a toolchain to scan. The names are the language.
-Values and attributes are the small closed sets. A property such as
-``width`` has no value list.
-"""
+from __future__ import annotations
+
+from typing import Any, Iterator
 
 
 _PROPERTIES = (
@@ -114,14 +113,14 @@ _ATTRS = {
 }
 
 
-def _symbol(owner, name, kind):
+def _symbol(owner: str, name: str, kind: str) -> dict[str, Any]:
     return {
         "t": "s", "owner": owner, "name": name, "kind": kind,
         "signature": name, "doc": "",
     }
 
 
-def css_records():
+def css_records() -> Iterator[dict[str, Any]]:
     for name in _PROPERTIES:
         yield _symbol("css", name, "variable")
     for prop, values in _VALUES.items():
@@ -129,7 +128,7 @@ def css_records():
             yield _symbol(prop, name, "variable")
 
 
-def html_records():
+def html_records() -> Iterator[dict[str, Any]]:
     for name in _TAGS:
         yield _symbol("html", name, "type")
     for name in _GLOBAL:

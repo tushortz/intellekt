@@ -1,21 +1,19 @@
-"""Scan a Go install.
+"""Scan a Go install for exported ``func``/``type``/``const`` names; methods are
+owned by ``<import-path>.Type``.
 
-Exported ``func``, ``type``, and ``const`` names are kept. A method
-``func (b *Buffer) Write`` is owned by ``<import-path>.Buffer``. The import
-path is the directory under ``GOROOT/src`` or the module cache, with the
-``@version`` suffix removed.
-
-NOTE: ``cmd`` is skipped. Files for other operating systems are still
-indexed (``//go:build`` is ignored), and a signature that spans lines is
-missed. The module cache stops after ``MODULE_FILES``. Upgrade path: honor
+NOTE: ``cmd`` is skipped, ``//go:build`` is ignored, multi-line signatures are
+missed, and the module cache stops after ``MODULE_FILES``. Upgrade path: honor
 build tags, then index one module at a time.
 
 NOTE: a module in the project being edited is not indexed unless it is
 already in the module cache. Upgrade path: index the active view's folder.
 """
 
+from __future__ import annotations
+
 import os
 import re
+from typing import Any, Iterator
 
 from . import merge_modules, read_text, walk_files
 
@@ -40,7 +38,7 @@ _BASIC = {
 }
 
 
-def _snippet(name, args):
+def _snippet(name: str, args: str) -> str:
     labels = []
     for part in args.split(","):
         part = part.strip()
@@ -55,7 +53,7 @@ def _snippet(name, args):
     return "%s(%s)" % (name, ", ".join(bits))
 
 
-def _type_name(text, prefix):
+def _type_name(text: str, prefix: str) -> str:
     text = (text or "").strip()
     if not text or text.startswith("("):
         found = ""
@@ -83,12 +81,12 @@ def _type_name(text, prefix):
     return prefix + "." + text
 
 
-def _recv(text):
+def _recv(text: str) -> str:
     match = re.search(r"\*?([A-Z]\w*)\s*$", (text or "").strip())
     return match.group(1) if match else ""
 
 
-def _import_path(path, root, modules):
+def _import_path(path: str, root: str, modules: bool) -> str:
     rel = os.path.relpath(os.path.dirname(path), root)
     if rel == ".":
         return ""
@@ -103,8 +101,8 @@ def _import_path(path, root, modules):
     return "/".join(parts)
 
 
-def scan_source(text, import_path):
-    """Return records for one Go file already known to live at ``import_path``."""
+def scan_source(text: str, import_path: str) -> list[dict[str, Any]]:
+    """Return records for one Go file at ``import_path``."""
     if not import_path:
         return []
     out = [{"t": "m", "name": import_path, "doc": ""}]
@@ -170,7 +168,7 @@ def scan_source(text, import_path):
     return out
 
 
-def _tree(root, modules, limit):
+def _tree(root: str, modules: bool, limit: int) -> Iterator[dict[str, Any]]:
     if not root or not os.path.isdir(root):
         return
     for path in walk_files([root], (".go",), limit, _SKIP):
@@ -185,9 +183,14 @@ def _tree(root, modules, limit):
             yield rec
 
 
-def scan_roots(stdlib, modules="", stdlib_limit=STDLIB_FILES, module_limit=MODULE_FILES):
-    """Yield records from ``GOROOT/src`` and, after that, the module cache."""
-    def records():
+def scan_roots(
+    stdlib: str,
+    modules: str = "",
+    stdlib_limit: int = STDLIB_FILES,
+    module_limit: int = MODULE_FILES,
+) -> Iterator[dict[str, Any]]:
+    """Yield records from ``GOROOT/src``, then the module cache."""
+    def records() -> Iterator[dict[str, Any]]:
         for name in _BUILTINS:
             yield {"t": "m", "name": name, "doc": ""}
         yield {

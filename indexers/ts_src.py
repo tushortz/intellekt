@@ -1,19 +1,16 @@
-"""Scan TypeScript declaration files.
+"""Scan TypeScript ``.d.ts`` files; globals are owned by ``global`` (the cache rejects "").
 
-Global values (``declare var console: Console``) are stored on the owner
-``global``. The cache rejects an empty owner. ``console.`` follows the
-recorded type, which is the interface module ``Console``.
+NOTE: a brace scan, not a TS parser: cross-file overloads, mapped types and
+most generics are missed. Upgrade path: the TypeScript binder, outside Sublime.
 
-NOTE: this is a brace scan, not a TypeScript parser. Overloads merged across
-files, mapped types, and most generics are missed. Upgrade path: the
-TypeScript binder, run outside Sublime.
-
-NOTE: only the installed ``typescript`` package and the global npm root are
-read. A project's ``node_modules`` is not. Upgrade path: index the folder of
-the active view.
+NOTE: only the ``typescript`` package and global npm root are read, not a
+project's ``node_modules``. Upgrade path: index the active view's folder.
 """
 
+from __future__ import annotations
+
 import re
+from typing import Any, Iterable, Iterator, Optional
 
 from . import SKIP_DIRS, merge_modules, read_text, walk_files
 
@@ -25,12 +22,12 @@ _SKIP_RETURNS = {
 _KEYWORDS = {"if", "for", "while", "switch", "catch", "return", "function", "new"}
 
 
-def _clean_doc(raw):
+def _clean_doc(raw: str) -> str:
     lines = [re.sub(r"^\s*\*\s?", "", line).rstrip() for line in raw.splitlines()]
     return "\n".join(lines).strip()
 
 
-def _docs(text):
+def _docs(text: str) -> dict[int, str]:
     found = {}
     for match in re.finditer(r"/\*\*(.*?)\*/", text, re.S):
         line = text.count("\n", 0, match.end())
@@ -38,12 +35,12 @@ def _docs(text):
     return found
 
 
-def _blank(text):
+def _blank(text: str) -> str:
     text = re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"), text, flags=re.S)
     return re.sub(r"//.*?$", "", text, flags=re.M)
 
 
-def _labels(args):
+def _labels(args: str) -> list[str]:
     labels = []
     for part in args.split(","):
         part = part.strip()
@@ -57,7 +54,7 @@ def _labels(args):
     return labels
 
 
-def _snippet(name, args):
+def _snippet(name: str, args: str) -> str:
     labels = _labels(args)
     if not labels:
         return name + "()"
@@ -65,7 +62,7 @@ def _snippet(name, args):
     return "%s(%s)" % (name, ", ".join(bits))
 
 
-def _returns(text):
+def _returns(text: Optional[str]) -> str:
     text = (text or "").strip().rstrip(";").strip()
     if not re.fullmatch(r"[A-Za-z_][\w.]*", text):
         return ""
@@ -74,7 +71,7 @@ def _returns(text):
     return text
 
 
-def _symbol(owner, name, kind, signature, doc, returns=""):
+def _symbol(owner: str, name: str, kind: str, signature: str, doc: str, returns: str = "") -> dict[str, Any]:
     return {
         "t": "s",
         "owner": owner,
@@ -86,7 +83,7 @@ def _symbol(owner, name, kind, signature, doc, returns=""):
     }
 
 
-def scan_source(text):
+def scan_source(text: str) -> list[dict[str, Any]]:
     """Return module and symbol records for one ``.d.ts`` file."""
     docs = _docs(text)
     lines = _blank(text).splitlines()
@@ -94,17 +91,17 @@ def scan_source(text):
     depth = 0
     frames = []
 
-    def prefix():
+    def prefix() -> str:
         parts = [frame["name"] for frame in frames if frame["kind"] in ("mod", "ns")]
         return ".".join(parts)
 
-    def current_type():
+    def current_type() -> Optional[dict[str, Any]]:
         for frame in reversed(frames):
             if frame["kind"] == "type":
                 return frame
         return None
 
-    def doc_at(index):
+    def doc_at(index: int) -> str:
         return docs.get(index) or docs.get(index - 1) or ""
 
     for index, line in enumerate(lines):
@@ -177,9 +174,9 @@ def scan_source(text):
     return out
 
 
-def scan_roots(roots, limit=MAX_FILES):
+def scan_roots(roots: Iterable[str], limit: int = MAX_FILES) -> Iterator[dict[str, Any]]:
     """Yield records from ``.d.ts`` files under ``roots``."""
-    def records():
+    def records() -> Iterator[dict[str, Any]]:
         seen = 0
         for path in walk_files(roots, (".d.ts",), limit, SKIP_DIRS | {"dist", "test", "tests"}):
             text = read_text(path)
